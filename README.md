@@ -37,11 +37,13 @@ Linux Advisory
  ---------------------------------------------------
  * acquire your banjo-kazooie: nuts and bolts (usa) iso (you do not need the update for its not supported)
 
- * dump the contents of your iso with your favorite dump tool (ill get around to making something that works on both windows and linux so its not so weird)
+ * dump the contents of your iso with <a href="https://github.com/etonedemid/NutStaller/releases/tag/v1.2.0">nutstaller</a>
 
- * download renut.zip (windows) or renut.appimage(linux) from the latest release
+ * nutstaller should also be able to download the latest release for your OS if it doesnt download from releases
 
- * open renut.exe or renut.appimage, this will open an imgui prompt so you can select your games assets (where default.xex is) as well as set where your saves go (i reccomend whatever it defaults to)
+ * nutstaller should open renut.exe or the appimage, if it doesnt open it by double clicking the executable
+
+ * set your game data root as the folder where you put the assets you dumped with nutstaller
 
  * click continue
 
