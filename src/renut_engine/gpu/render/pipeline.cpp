@@ -3,6 +3,7 @@
  */
 #include "renut_engine/gpu/render/pipeline.h"
 
+#include <atomic>
 #include <algorithm>
 #include <condition_variable>
 #include <cstring>
@@ -43,6 +44,9 @@ REXCVAR_DEFINE_STRING(renut_pipeline_list, "pipeline_list.bin", "Nuts&Bolts/Grap
                       "The pipelines the renderer has built, which it builds ahead of use at the "
                       "next start (delete it to start over)");
 
+REXCVAR_DEFINE_BOOL(shader_compile_overlay, true, "Nuts&Bolts/Performance",
+                    "A note at the bottom right while shaders (pipelines) are being compiled");
+
 namespace renut::gpu {
 
 namespace {
@@ -51,6 +55,11 @@ struct CachedPipeline {
   PipelineKey key;
   std::unique_ptr<plume::RenderPipeline> pipeline;
 };
+
+// Pipelines being built right now (render thread and prebuild workers) and
+// built this session, for the compile overlay.
+std::atomic<u32> g_compiling{0};
+std::atomic<u32> g_compiled{0};
 
 // Render thread (State().mutex).
 std::unordered_map<uint64_t, std::vector<CachedPipeline>> g_pipelines;
@@ -179,7 +188,10 @@ std::unique_ptr<plume::RenderPipeline> Build(const PipelineKey &key, const Pipel
   desc.inputElements = layout.input_elements.data();
   desc.inputElementsCount = uint32_t(layout.input_elements.size());
 
+  g_compiling.fetch_add(1, std::memory_order_relaxed);
   auto pipeline = s.device->createGraphicsPipeline(desc);
+  g_compiling.fetch_sub(1, std::memory_order_relaxed);
+  g_compiled.fetch_add(1, std::memory_order_relaxed);
   if (GraphicsPipelineCreated(pipeline.get())) {
     // Names the guest shaders in captures.
     const auto *vs = static_cast<const ShaderCacheEntry *>(key.vertex_shader);
@@ -667,6 +679,16 @@ void PipelineShaderLoaded(const ShaderCacheEntry *entry) {
   g_prebuild.waiting.erase(it);
   if (queued)
     g_prebuild.work.notify_all();
+}
+
+PipelineCompileStatus GetPipelineCompileStatus() {
+  PipelineCompileStatus status;
+  status.compiling = g_compiling.load(std::memory_order_relaxed);
+  status.compiled = g_compiled.load(std::memory_order_relaxed);
+  std::lock_guard lock(g_prebuild.mutex);
+  for (const Job *job : g_prebuild.queue)
+    status.queued += job->stage == Job::Stage::Pending ? 1 : 0;
+  return status;
 }
 
 PipelineCounts PipelineCountsLocked() {

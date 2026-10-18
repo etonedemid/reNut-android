@@ -14,6 +14,12 @@
 #include <SDL3/SDL_video.h>
 #endif
 
+#if defined(__SWITCH__)
+extern "C" {
+#include <switch/display/native_window.h>
+}
+#endif
+
 namespace renut::gpu {
 
 #if defined(_WIN32)
@@ -73,10 +79,12 @@ namespace {
 // Runs before main, so before the SDK initialises SDL. plume builds its Vulkan
 // surface with VK_KHR_xlib_surface, which needs the X11 video driver (XWayland
 // on Wayland sessions). An explicit user setting is left alone.
+#if !defined(__SWITCH__) && !defined(__ANDROID__)
 [[maybe_unused]] const bool kPreferX11 = [] {
   setenv("SDL_VIDEO_DRIVER", "x11", 0);
   return true;
 }();
+#endif
 
 // The app owns one window.
 SDL_Window *FindGameSdlWindow() {
@@ -95,6 +103,19 @@ bool GetNativeRenderWindow(plume::RenderWindow &out) {
     RGPU_ERROR("No SDL window for the Vulkan surface");
     return false;
   }
+#if defined(__SWITCH__)
+  // Horizon has one screen: the application's default layer.
+  out = nwindowGetDefault();
+  return true;
+#elif defined(__ANDROID__)
+  out = static_cast<ANativeWindow *>(SDL_GetPointerProperty(
+      SDL_GetWindowProperties(sdl_window), SDL_PROP_WINDOW_ANDROID_WINDOW_POINTER, nullptr));
+  if (!out) {
+    RGPU_ERROR("SDL window has no ANativeWindow yet");
+    return false;
+  }
+  return true;
+#else
 
   const SDL_PropertiesID props = SDL_GetWindowProperties(sdl_window);
   out.display = static_cast<Display *>(
@@ -108,6 +129,7 @@ bool GetNativeRenderWindow(plume::RenderWindow &out) {
     return false;
   }
   return true;
+#endif
 }
 
 bool GetRenderWindowPixelSize(uint32_t &width, uint32_t &height) {

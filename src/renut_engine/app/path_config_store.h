@@ -6,6 +6,9 @@
 #include <system_error>
 
 #include "renut_engine/app/app_paths.h"
+#if defined(__SWITCH__) || defined(__ANDROID__)
+#include <rex/filesystem.h>
+#endif
 #if defined(_WIN32)
 #include <windows.h>
 #endif
@@ -44,6 +47,10 @@ namespace PathConfigStore {
         wchar_t exe_path[MAX_PATH] = {};
         GetModuleFileNameW(nullptr, exe_path, MAX_PATH);
         std::filesystem::path dir = std::filesystem::path(exe_path).parent_path();
+#elif defined(__SWITCH__) || defined(__ANDROID__)
+        // Switch: hbloader's argv[0], sdmc:/switch/renut/renut.nro; Android:
+        // the app's files directory
+        std::filesystem::path dir = rex::filesystem::GetExecutableFolder();
 #else
         std::error_code ec;
         std::filesystem::path dir = std::filesystem::read_symlink("/proc/self/exe", ec).parent_path();

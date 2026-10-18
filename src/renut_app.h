@@ -1,9 +1,15 @@
 #pragma once
 #include <rex/rex_app.h>
 #include "renut_engine/ui/fps_overlay.h"
+#include "renut_engine/ui/shader_overlay.h"
 #include "renut_engine/app/renut_logging.h"
 #include "renut_engine/ui/renut_logging_overlay.h"
 #include "renut_engine/ui/path_setup_wizard.h"
+#if defined(__ANDROID__)
+#include "renut_engine/ui/android_manager.h"
+#include "renut_engine/ui/touch_controls.h"
+#include <rex/input/input_system.h>
+#endif
 #include "renut_engine/ui/online_dialog.h"
 #include "renut_engine/ui/friends_dialog.h"
 #include "renut_engine/gpu/overlay/app_integration.h"
@@ -60,6 +66,9 @@ public:
     // started yet, so .nbpatch mods can still change what GAME: serves.
     void OnPostSetup() override {
         renut::mods::LoadMods(runtime());
+#if defined(__ANDROID__)
+        renut::touch::Install(static_cast<rex::input::InputSystem*>(runtime()->input_system()));
+#endif
     }
 
     // reNut's dialogs live in its own overlay (gpu/overlay_ui.h); the SDK's
@@ -72,19 +81,29 @@ public:
         online_dialog_ = std::make_unique<OnlineDialog>();
         friends_dialog_ = std::make_unique<FriendsDialog>();
         renut::gpu::overlay::AddDialog(fps_overlay_.get());
+        renut::gpu::overlay::AddDialog(&shader_overlay_);
         renut::gpu::overlay::AddDialog(log_overlay_.get());
         renut::gpu::overlay::AddDialog(path_wizard_.get());
         renut::gpu::overlay::AddDialog(online_dialog_.get());
         renut::gpu::overlay::AddDialog(friends_dialog_.get());
+#if defined(__ANDROID__)
+        renut::gpu::overlay::AddDialog(&touch_overlay_);
+        renut::gpu::overlay::AddDialog(&android_manager_);
+#endif
     }
 
     void OnShutdown() override {
         renut::gpu::ShutdownRenderer();
         renut::gpu::overlay::RemoveDialog(fps_overlay_.get());
+        renut::gpu::overlay::RemoveDialog(&shader_overlay_);
         renut::gpu::overlay::RemoveDialog(log_overlay_.get());
         renut::gpu::overlay::RemoveDialog(path_wizard_.get());
         renut::gpu::overlay::RemoveDialog(online_dialog_.get());
         renut::gpu::overlay::RemoveDialog(friends_dialog_.get());
+#if defined(__ANDROID__)
+        renut::gpu::overlay::RemoveDialog(&android_manager_);
+        renut::gpu::overlay::RemoveDialog(&touch_overlay_);
+#endif
     }
 
     // Native renderer: the SDK runs without its GPU backend and the overlay is
@@ -115,9 +134,16 @@ public:
         // (and its overlay-only presentation) comes up here.
         renut::gpu::StartRenderer(app_context(), [this] { return imgui_drawer(); });
 
+#if defined(__ANDROID__)
+        // The manager (driver, settings, game folder) comes first every time.
+        android_manager_.Init(app_name_, defaults, [resume](rex::PathConfig resolved) {
+            resume(resolved);
+            });
+#else
         path_wizard_->Init(app_name_, defaults, [resume](rex::PathConfig resolved) {
             resume(resolved);
             });
+#endif
         return std::nullopt;
     }
 
@@ -125,7 +151,12 @@ private:
     std::string      app_name_;
     std::unique_ptr<PathSetupWizard> path_wizard_;
     std::unique_ptr<FpsOverlay> fps_overlay_;
+    ShaderCompileOverlay shader_overlay_;
     std::unique_ptr<RenuLogOverlayDialog> log_overlay_;
     std::unique_ptr<OnlineDialog> online_dialog_;
     std::unique_ptr<FriendsDialog> friends_dialog_;
+#if defined(__ANDROID__)
+    AndroidManager android_manager_;
+    renut::touch::Overlay touch_overlay_;
+#endif
 };

@@ -28,6 +28,10 @@ plume::RenderShaderFormat HostShaderFormat();
 // Creates the plume interface for the active backend, or nullptr.
 std::unique_ptr<plume::RenderInterface> CreateRenderInterface();
 
+// Writes the persistent pipeline cache now (Switch, Android), e.g. before the
+// app is sent to the background and maybe killed.
+void FlushPipelineCache();
+
 // Buffer flags for how the renderer uses a buffer, per backend. plume's
 // Vulkan buffers take their usage from particular flags: a device address
 // (vk::RawBufferLoad/Store in the shaders) only with CONSTANT, a storage

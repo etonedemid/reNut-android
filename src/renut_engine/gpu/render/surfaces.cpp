@@ -1,6 +1,7 @@
 /**
  * @file    gpu/render/surfaces.cpp
  */
+#include "renut_engine/app/platform_defaults.h"
 #include "renut_engine/gpu/render/surfaces.h"
 
 #include <algorithm>
@@ -23,6 +24,12 @@ REXCVAR_DEFINE_STRING(renut_resolution, "720p", "Nuts&Bolts/Graphics",
                       "Internal render resolution, by its height: 480p, 720p (the game's own), "
                       "1080p, 1440p or 4K (2160 lines). Applies from the next frame.")
     .allowed({"480p", "720p", "1080p", "1440p", "4K"});
+
+REXCVAR_DEFINE_STRING(renut_msaa, RENUT_DEFAULT_MSAA, "Nuts&Bolts/Graphics",
+                      "Multisampling of the game's targets: Game keeps the console's 2x/4x, Off "
+                      "renders them with one sample (much cheaper on weak GPUs, rougher edges). "
+                      "Applies to targets made after the change.")
+    .allowed({"Game", "Off"});
 
 namespace renut::gpu {
 
@@ -110,6 +117,8 @@ void RetireTarget(HostSurface &surface) {
 }
 
 plume::RenderSampleCounts SampleCount(u32 info_word) {
+  if (REXCVAR_GET(renut_msaa) == "Off")
+    return plume::RenderSampleCount::COUNT_1;
   switch ((info_word >> 16) & 3) {
   case 1:
     return plume::RenderSampleCount::COUNT_2;

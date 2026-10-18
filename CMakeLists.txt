@@ -44,11 +44,30 @@ set(RENUT_SOURCES
 if(WIN32)
 list(APPEND RENUT_SOURCES icon/app.rc)
     add_executable(renut WIN32 ${RENUT_SOURCES})
+elseif(ANDROID)
+    # SDL's Java activity loads librenut.so and calls SDL_main (android/).
+    add_library(renut SHARED ${RENUT_SOURCES})
 else()
     add_executable(renut ${RENUT_SOURCES})
 endif()
 
 rexglue_setup_target(renut)
+
+if(NINTENDO_SWITCH)
+    # Homebrew: renut.elf -> renut.nro for hbloader (run in title takeover).
+    nx_generate_nacp(renut.nacp NAME "reNut" AUTHOR "reNut" VERSION "0.1.0")
+    nx_create_nro(renut NACP renut.nacp ICON "${CMAKE_SOURCE_DIR}/icon/renut_switch.jpg")
+endif()
+
+if(ANDROID)
+    # Custom Vulkan drivers (Turnip) for Adreno; its hook libraries go into the
+    # APK next to librenut.so (android/build.sh).
+    add_subdirectory(thirdparty/libadrenotools EXCLUDE_FROM_ALL)
+    target_link_libraries(renut PRIVATE adrenotools)
+    add_dependencies(renut main_hook file_redirect_hook gsl_alloc_hook)
+    target_sources(renut PRIVATE src/renut_engine/app/android_driver.cpp src/renut_engine/app/xiso.cpp
+        src/renut_engine/ui/touch_controls.cpp)
+endif()
 
 # Online play runs on Epic Online Services (src/renut_engine/online/eos.cpp):
 # sign-in by Device ID and peer-to-peer traffic. The EOS SDK comes from the Epic
@@ -64,7 +83,7 @@ set(RENUT_EOS_SANDBOX_ID "" CACHE STRING "EOS sandbox ID")
 set(RENUT_EOS_DEPLOYMENT_ID "" CACHE STRING "EOS deployment ID")
 set(RENUT_EOS_CLIENT_ID "" CACHE STRING "EOS client ID (a client policy allowing Connect and P2P)")
 set(RENUT_EOS_CLIENT_SECRET "" CACHE STRING "EOS client secret")
-if(EXISTS "${RENUT_EOS_DIR}/Include/eos_sdk.h")
+if(EXISTS "${RENUT_EOS_DIR}/Include/eos_sdk.h" AND NOT ANDROID)
     if(WIN32)
         set(renut_eos_lib "${RENUT_EOS_DIR}/Lib/EOSSDK-Win64-Shipping.lib")
         set(renut_eos_runtime "${RENUT_EOS_DIR}/Bin/EOSSDK-Win64-Shipping.dll")

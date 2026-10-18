@@ -13,6 +13,12 @@
 
 #include "renut_engine/perf/frame_stats.h"
 #include "renut_engine/gpu/guest/guest_memory.h"
+
+#if defined(__SWITCH__)
+namespace rex::thread {
+void SwitchSampleCurrentThread();  // threading_posix.cpp
+}
+#endif
 #include "renut_engine/gpu/log.h"
 #include "renut_engine/gpu/backend/video.h"
 
@@ -86,6 +92,8 @@ void Execute(Item &item) {
 void Run() {
 #if defined(_WIN32)
   SetThreadDescription(GetCurrentThread(), L"renut render");
+#elif defined(__SWITCH__)
+  rex::thread::SwitchSampleCurrentThread();
 #endif
   t_render_thread = true;
   std::vector<Item> batch;
