@@ -21,6 +21,29 @@
  *   upscaled to the screen they show as blobs that slide over dark areas as
  *   the camera moves. A resolve's destination takes its source's host format,
  *   so the passes reading them see the finer values too.
+ * - renut_depth_of_field: the fog object's full-screen composite
+ *   (sub_82217628; VS 950f5ca8b083fa7c, PS a5e26fb9039da3bf in the main
+ *   game) blends the sharp scene toward the blurred one by
+ *   min(saturate(distance outside the focus range * c192.x near / c192.y
+ *   far), c194.w), c194.w being the most blur (0.8). Reduced halves the
+ *   scales and the cap in that draw's constants, Off zeroes them.
+ * - renut_bloom: the glow composite (ps_981a6a58f2abfa42) adds the scene's
+ *   four bloom levels at weights c0 = (1, 1.2, 1.6, 2); Reduced halves them in
+ *   that draw's constants, Off zeroes them.
+ * - renut_msaa: the sample count of the targets the game multisamples (its
+ *   D3DMULTISAMPLE_TYPE in the surface header, SurfaceInfo bits 16-17; the
+ *   scene and its depth). Game keeps it, Off renders them single-sampled,
+ *   2x/4x/8x give them that many samples. Everything that reads those targets
+ *   follows the host count: draws' pipelines take their first target's, color
+ *   resolves are hardware resolves of any count, and the depth resolve reads
+ *   sample 0 of a multisampled view. A count the GPU can't do for the
+ *   target's format and the depth format steps down to one it can, so a
+ *   draw's color and depth targets always agree.
+ * - renut_anti_aliasing: post-process anti-aliasing of the finished frame,
+ *   in the present pass (present_ps.hlsl) as it scans the game's front
+ *   buffer out to the window: FXAA in the frame's own texels, or SMAA 1x in
+ *   passes of its own before it (backend/smaa.h). The overlay is drawn after
+ *   it, so only the game's image (HUD included) is smoothed.
  */
 #pragma once
 
@@ -43,7 +66,25 @@ RenderScale SurfaceRenderScale(const d3d::SurfaceDesc &desc, RenderScale resolut
 // The host format of the color target 'desc' describes.
 plume::RenderFormat SurfaceColorFormat(const d3d::SurfaceDesc &desc);
 
+// The host sample count of the target 'desc' describes, whose host format is
+// 'format': the game's, or renut_msaa's for one the game multisamples.
+plume::RenderSampleCounts SurfaceSampleCount(const d3d::SurfaceDesc &desc, plume::RenderFormat format);
+
+// renut_anti_aliasing as last latched, for the present pass (any thread).
+constexpr uint32_t kPostAntiAliasingOff = 0;
+constexpr uint32_t kPostAntiAliasingFxaa = 1;
+constexpr uint32_t kPostAntiAliasingSmaa = 2;
+uint32_t PostAntiAliasing();
+
 // The anisotropy linear minification gets at least (1 = the game's own).
 uint32_t MinAnisotropy();
+
+// How strong the depth of field blur is, as a share of the game's (1 = the
+// game's own, 0 = off).
+float DepthOfFieldStrength();
+
+// How strong the bloom (glow) is, as a share of the game's (1 = the game's
+// own, 0 = off).
+float BloomStrength();
 
 } // namespace renut::gpu

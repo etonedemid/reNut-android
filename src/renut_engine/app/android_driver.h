@@ -7,7 +7,9 @@
 // shared storage): <files>/drivers/<id>/. The selection is in
 // <files>/driver.txt; empty or missing means the system driver.
 
+#include <cstdint>
 #include <filesystem>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -47,5 +49,15 @@ bool HasStorageAccess();
 void RequestStorageAccess();
 // Starts a new process: a driver is loaded once per process.
 void RestartApp();
+
+// RenutActivity's static helpers, callable from any thread.
+std::optional<std::vector<uint8_t>> HttpGet(const std::string &url);
+// A PNG or JPEG as RGBA, scaled down to at most max_width; empty on failure.
+std::vector<uint8_t> DecodeImage(const std::vector<uint8_t> &data, int max_width, int &width,
+                                 int &height);
+std::string Sha256(const std::vector<uint8_t> &data);  // lowercase hex
+// Both return "" on success, else the error.
+std::string ZipFolder(const std::filesystem::path &folder, const std::filesystem::path &zip);
+std::string Unzip(const std::filesystem::path &zip, const std::filesystem::path &folder);
 
 } // namespace renut::android

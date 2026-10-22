@@ -22,6 +22,7 @@
 #include <plume_d3d12.h>
 #endif
 
+#include "renut_engine/gpu/backend/command_recorder.h"
 #include "renut_engine/gpu/log.h"
 #if defined(__ANDROID__)
 #include "renut_engine/app/android_driver.h"
@@ -45,7 +46,11 @@ REXCVAR_DEFINE_BOOL(renut_vulkan_debug_layers, false, "Nuts&Bolts/Graphics",
     .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
 
 namespace plume {
+#if defined(PLUME_SDL_VULKAN_ENABLED)
+std::unique_ptr<RenderInterface> CreateVulkanInterface(RenderWindow sdlWindow);
+#else
 std::unique_ptr<RenderInterface> CreateVulkanInterface();
+#endif
 #if defined(_WIN32)
 std::unique_ptr<RenderInterface> CreateD3D12Interface();
 #endif
@@ -372,7 +377,7 @@ plume::RenderShaderFormat HostShaderFormat() {
   return IsVulkan() ? plume::RenderShaderFormat::SPIRV : plume::RenderShaderFormat::DXIL;
 }
 
-std::unique_ptr<plume::RenderInterface> CreateRenderInterface() {
+std::unique_ptr<plume::RenderInterface> CreateRenderInterface([[maybe_unused]] plume::RenderWindow window) {
 #if defined(_WIN32)
   if (!IsVulkan()) {
     if (REXCVAR_GET(renut_gpu_dred))
@@ -386,7 +391,11 @@ std::unique_ptr<plume::RenderInterface> CreateRenderInterface() {
   // A custom driver the manager picked (Turnip...), before plume loads volk.
   renut::android::LoadVulkanDriver();
 #endif
+#if defined(PLUME_SDL_VULKAN_ENABLED)
+  auto render_interface = plume::CreateVulkanInterface(window);
+#else
   auto render_interface = plume::CreateVulkanInterface();
+#endif
   if (render_interface)
     RouteVulkanPipelineCreation();
   return render_interface;
@@ -410,6 +419,16 @@ bool TextureCreated(const plume::RenderTexture *texture) {
     return static_cast<const plume::D3D12Texture *>(texture)->d3d != nullptr;
 #endif
   return static_cast<const plume::VulkanTexture *>(texture)->vk != VK_NULL_HANDLE;
+}
+
+bool BufferCreated(const plume::RenderBuffer *buffer) {
+  if (!buffer)
+    return false;
+#if defined(_WIN32)
+  if (!IsVulkan())
+    return static_cast<const plume::D3D12Buffer *>(buffer)->d3d != nullptr;
+#endif
+  return static_cast<const plume::VulkanBuffer *>(buffer)->vk != VK_NULL_HANDLE;
 }
 
 namespace {
@@ -501,7 +520,27 @@ GpuMemoryUsage QueryGpuMemory(plume::RenderDevice *device) {
   return usage;
 }
 
+namespace {
+
+// Whether the backend list can have the blend constant set.
+bool BlendConstantSettable(plume::RenderCommandList *cmd) {
+#if defined(_WIN32)
+  if (!IsVulkan())
+    return static_cast<plume::D3D12CommandList *>(cmd)->d3d != nullptr;
+#endif
+  return static_cast<plume::VulkanCommandList *>(cmd)->vk && vkCmdSetBlendConstants;
+}
+
+} // namespace
+
 bool SetBlendConstant(plume::RenderCommandList *cmd, const float rgba[4]) {
+  // A recorder makes the call on its backend list, through here.
+  if (CommandRecorder *recorder = CommandRecorder::From(cmd)) {
+    if (!BlendConstantSettable(recorder->Target()))
+      return false;
+    recorder->RecordBlendConstant(rgba);
+    return true;
+  }
 #if defined(_WIN32)
   if (!IsVulkan()) {
     ID3D12GraphicsCommandList *d3d = static_cast<plume::D3D12CommandList *>(cmd)->d3d;
@@ -518,6 +557,22 @@ bool SetBlendConstant(plume::RenderCommandList *cmd, const float rgba[4]) {
     return false;
   vkCmdSetBlendConstants(vk, rgba);
   return true;
+}
+
+void SetStencilReference(plume::RenderCommandList *cmd, uint32_t reference) {
+  if (CommandRecorder *recorder = CommandRecorder::From(cmd)) {
+    recorder->RecordStencilReference(reference);
+    return;
+  }
+#if defined(_WIN32)
+  if (!IsVulkan()) {
+    if (ID3D12GraphicsCommandList *d3d = static_cast<plume::D3D12CommandList *>(cmd)->d3d)
+      d3d->OMSetStencilRef(reference);
+  }
+#else
+  (void)cmd;
+  (void)reference;
+#endif
 }
 
 bool GraphicsPipelineCreated(const plume::RenderPipeline *pipeline) {

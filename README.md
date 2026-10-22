@@ -15,9 +15,13 @@ Tested on a Galaxy S25+ (Snapdragon 8 Elite, Adreno 830, Android 16).
   - Set Up Game: pick the game folder, or extract a disc image (built-in extract-xiso).
   - Drivers: pick a custom Vulkan driver (Turnip and others, through libadrenotools).
   - Settings: reNut's options, with defaults sized for phones.
+  - Workshop: vehicles and part mods from the [NutStaller workshop](https://github.com/etonedemid/nutstaller-workshop). Installing a vehicle installs the part mods it needs first.
+  - Saves: back up the save to `/sdcard/reNut/backups`, name, restore or delete backups, or import a save folder put in `/sdcard/reNut`. Restoring or importing backs up the current save first. Backups are plain zips, the same as NutStaller's on a PC.
+  - Gamepad: D-pad or stick to move, A to press, B to go back, LB/RB to change page, Start to play.
 - On-screen controls (virtual Xbox pad) with an editable layout. They hide while a gamepad is connected.
 - Back gesture opens a side menu: resume, settings, touch layout, exit to the manager. The game pauses while it is open.
 - Backgrounding the app pauses the game.
+- Keyboard and mouse controls and custom part mods from upstream reNut (see its [custom-parts.md](https://github.com/masterspike52/reNut/blob/main/docs/modding/custom-parts.md)).
 - Compiled shaders are kept on disk (one cache per driver). A small overlay shows while shaders compile.
 
 ## Install and play

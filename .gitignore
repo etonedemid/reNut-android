@@ -45,8 +45,10 @@ cmake/eos_credentials.cmake
 *.lib
 *.so
 *.AppImage
-# ...except the shader compiler XenosRecomp builds with.
+# ...except the shader compiler XenosRecomp builds with (not its macOS
+# libraries: 55 MB each, and reNut builds for Windows and Linux).
 !/thirdparty/reblue-XenosRecomp/thirdparty/dxc-bin/**
+*.dylib
 
 # ---------------------------------------------------------------------------
 # docs/: only the documentation itself
@@ -54,6 +56,7 @@ cmake/eos_credentials.cmake
 /docs/*
 !/docs/*.md
 !/docs/android/
+!/docs/modding/
 
 # ---------------------------------------------------------------------------
 # Local tools, captures, traces and other people's projects
@@ -76,6 +79,7 @@ cmake/eos_credentials.cmake
 # ---------------------------------------------------------------------------
 *.bak
 *.orig
+*.aps
 __pycache__/
 *.pyc
 .vs/

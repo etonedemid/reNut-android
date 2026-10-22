@@ -1,6 +1,8 @@
 package com.rexglue.renut;
 
 import android.content.Intent;
+import android.graphics.Bitmap;
+import android.graphics.BitmapFactory;
 import android.net.Uri;
 import android.os.Bundle;
 import android.os.Build;
@@ -9,6 +11,20 @@ import android.provider.Settings;
 import android.view.KeyEvent;
 import android.view.View;
 import android.view.WindowManager;
+
+import java.io.BufferedInputStream;
+import java.io.ByteArrayOutputStream;
+import java.io.File;
+import java.io.FileInputStream;
+import java.io.FileOutputStream;
+import java.io.InputStream;
+import java.io.OutputStream;
+import java.net.HttpURLConnection;
+import java.net.URL;
+import java.security.MessageDigest;
+import java.util.zip.ZipEntry;
+import java.util.zip.ZipInputStream;
+import java.util.zip.ZipOutputStream;
 
 import org.libsdl.app.SDLActivity;
 
@@ -91,5 +107,121 @@ public class RenutActivity extends SDLActivity {
     // Whether the game folder on shared storage is readable yet.
     public boolean hasStorageAccess() {
         return Environment.isExternalStorageManager();
+    }
+
+    // --- helpers for the manager's workshop and saves (native code calls these
+    // from worker threads) ---
+
+    // The body of a GET (redirects followed), or null.
+    public static byte[] httpGet(String url) {
+        HttpURLConnection c = null;
+        try {
+            c = (HttpURLConnection) new URL(url).openConnection();
+            c.setRequestProperty("User-Agent", "reNut-Android/1.0");
+            c.setConnectTimeout(15000);
+            c.setReadTimeout(30000);
+            if (c.getResponseCode() != 200)
+                return null;
+            try (InputStream in = new BufferedInputStream(c.getInputStream())) {
+                ByteArrayOutputStream out = new ByteArrayOutputStream();
+                byte[] buf = new byte[65536];
+                for (int n; (n = in.read(buf)) > 0; )
+                    out.write(buf, 0, n);
+                return out.toByteArray();
+            }
+        } catch (Exception e) {
+            return null;
+        } finally {
+            if (c != null)
+                c.disconnect();
+        }
+    }
+
+    // A PNG or JPEG scaled down to at most maxWidth: {width, height, ARGB...}, or null.
+    public static int[] decodeImage(byte[] data, int maxWidth) {
+        Bitmap b = BitmapFactory.decodeByteArray(data, 0, data.length);
+        if (b == null)
+            return null;
+        if (b.getWidth() > maxWidth) {
+            Bitmap s = Bitmap.createScaledBitmap(b, maxWidth,
+                    Math.max(1, b.getHeight() * maxWidth / b.getWidth()), true);
+            b.recycle();
+            b = s;
+        }
+        int w = b.getWidth(), h = b.getHeight();
+        int[] out = new int[2 + w * h];
+        out[0] = w;
+        out[1] = h;
+        b.getPixels(out, 2, w, 0, 0, w, h);
+        b.recycle();
+        return out;
+    }
+
+    public static String sha256(byte[] data) {
+        try {
+            StringBuilder hex = new StringBuilder();
+            for (byte x : MessageDigest.getInstance("SHA-256").digest(data))
+                hex.append(String.format("%02x", x));
+            return hex.toString();
+        } catch (Exception e) {
+            return "";
+        }
+    }
+
+    // Zips the folder's contents (paths relative to it). Empty, or the error.
+    public static String zipFolder(String folder, String zip) {
+        File root = new File(folder);
+        try (ZipOutputStream out = new ZipOutputStream(new FileOutputStream(zip))) {
+            addToZip(out, root, "");
+            return "";
+        } catch (Exception e) {
+            new File(zip).delete();
+            return String.valueOf(e.getMessage());
+        }
+    }
+
+    private static void addToZip(ZipOutputStream out, File dir, String prefix) throws Exception {
+        File[] files = dir.listFiles();
+        if (files == null)
+            return;
+        byte[] buf = new byte[65536];
+        for (File f : files) {
+            if (f.isDirectory()) {
+                addToZip(out, f, prefix + f.getName() + "/");
+                continue;
+            }
+            out.putNextEntry(new ZipEntry(prefix + f.getName()));
+            try (InputStream in = new FileInputStream(f)) {
+                for (int n; (n = in.read(buf)) > 0; )
+                    out.write(buf, 0, n);
+            }
+            out.closeEntry();
+        }
+    }
+
+    // Unpacks a zip into the folder, refusing entries that would land outside
+    // it. Empty, or the error.
+    public static String unzip(String zip, String folder) {
+        try (ZipInputStream in = new ZipInputStream(new FileInputStream(zip))) {
+            File root = new File(folder).getCanonicalFile();
+            byte[] buf = new byte[65536];
+            for (ZipEntry e; (e = in.getNextEntry()) != null; ) {
+                File f = new File(root, e.getName()).getCanonicalFile();
+                if (!f.getPath().startsWith(root.getPath() + File.separator))
+                    return "the zip has a file outside its folder: " + e.getName();
+                if (e.isDirectory()) {
+                    f.mkdirs();
+                    continue;
+                }
+                f.getParentFile().mkdirs();
+                try (OutputStream out = new FileOutputStream(f)) {
+                    for (int n; (n = in.read(buf)) > 0; )
+                        out.write(buf, 0, n);
+                }
+            }
+            return "";
+        } catch (Exception e) {
+            return String.valueOf(e.getMessage());
+        }
     }
 }

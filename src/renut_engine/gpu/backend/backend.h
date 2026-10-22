@@ -25,8 +25,10 @@ const char *BackendName(Backend backend);
 
 plume::RenderShaderFormat HostShaderFormat();
 
-// Creates the plume interface for the active backend, or nullptr.
-std::unique_ptr<plume::RenderInterface> CreateRenderInterface();
+// Creates the plume interface for the active backend, or nullptr. 'window' is
+// the game window (GetNativeRenderWindow): on Linux plume's Vulkan interface
+// asks it for the surface's instance extensions.
+std::unique_ptr<plume::RenderInterface> CreateRenderInterface(plume::RenderWindow window);
 
 // Writes the persistent pipeline cache now (Switch, Android), e.g. before the
 // app is sent to the background and maybe killed.
@@ -46,8 +48,9 @@ plume::RenderBufferFlags StorageBufferFlags();      // bound as a storage buffer
 // description; true if the backend pipeline exists.
 bool GraphicsPipelineCreated(const plume::RenderPipeline *pipeline);
 
-// Same for textures.
+// Same for textures and buffers.
 bool TextureCreated(const plume::RenderTexture *texture);
+bool BufferCreated(const plume::RenderBuffer *buffer);
 
 // True once the device is lost (D3D12 device removed). The first call that
 // sees it logs the reason and, on D3D12, what DRED recorded: the command list
@@ -71,6 +74,13 @@ GpuMemoryUsage QueryGpuMemory(plume::RenderDevice *device);
 // command list. On Vulkan it lasts only until a pipeline that does not read
 // the constant is bound (only those that read it have it as dynamic state).
 bool SetBlendConstant(plume::RenderCommandList *cmd, const float rgba[4]);
+
+// Sets the stencil reference for the rest of the command list (D3D12). plume's
+// D3D12 pipelines never take RenderGraphicsPipelineDesc::stencilReference: they
+// all set 0 before each draw (checkStencilRef), which, being the cached value,
+// it then never sends; the reference set here stays. Vulkan pipelines have the
+// reference built in: nothing to do there.
+void SetStencilReference(plume::RenderCommandList *cmd, uint32_t reference);
 
 // A host shader compiled at build time for both backends (see gpu.cmake).
 struct HostShaderBlob {

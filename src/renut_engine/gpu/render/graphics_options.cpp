@@ -4,13 +4,18 @@
 #include "renut_engine/app/platform_defaults.h"
 #include "renut_engine/gpu/render/graphics_options.h"
 
+#include <atomic>
 #include <cstdlib>
 #include <string>
+#include <unordered_map>
+#include <unordered_set>
 
 #include <rex/cvar.h>
 #include <rex/types.h>
 
+#include "renut_engine/gpu/backend/video.h"
 #include "renut_engine/gpu/guest/widescreen.h"
+#include "renut_engine/gpu/log.h"
 #include "renut_engine/gpu/render/format.h"
 
 REXCVAR_DEFINE_STRING(renut_shadow_resolution, RENUT_DEFAULT("Resolution", "1x"), "Nuts&Bolts/Graphics",
@@ -33,6 +38,29 @@ REXCVAR_DEFINE_STRING(renut_post_process_precision, RENUT_DEFAULT("High", "Game"
                       "console's 8 bits (faint glow shows as blobs sliding over dark areas), High "
                       "uses 16 bits.")
     .allowed({"Game", "High"});
+
+REXCVAR_DEFINE_STRING(renut_depth_of_field, "Game", "Nuts&Bolts/Graphics",
+                      "Depth of field blur on what is out of focus: the game's own, Reduced (half "
+                      "as strong) or Off.")
+    .allowed({"Game", "Reduced", "Off"});
+
+REXCVAR_DEFINE_STRING(renut_bloom, "Game", "Nuts&Bolts/Graphics",
+                      "Glow around bright light and sky: the game's own, Reduced (half as strong) "
+                      "or Off.")
+    .allowed({"Game", "Reduced", "Off"});
+
+REXCVAR_DEFINE_STRING(renut_msaa, RENUT_DEFAULT_MSAA, "Nuts&Bolts/Graphics",
+                      "Multisample anti-aliasing of the scene: the game's own, Off, or 2x, 4x or "
+                      "8x. More samples smooth edges more but cost GPU time and memory, most at "
+                      "high resolutions. Applies from the next frame.")
+    .allowed({"Game", "Off", "2x", "4x", "8x"});
+
+REXCVAR_DEFINE_STRING(renut_anti_aliasing, "Off", "Nuts&Bolts/Graphics",
+                      "Anti-aliasing of the finished frame, on top of MSAA: Off, FXAA (fast; "
+                      "smooths every edge, the HUD's too, and softens the image a little) or SMAA "
+                      "(follows edges' shapes: smoother edges, text and textures kept sharp, a "
+                      "little more GPU time).")
+    .allowed({"Off", "FXAA", "SMAA"});
 
 namespace renut::gpu {
 
@@ -90,8 +118,40 @@ struct Latched {
   bool full_ambient_occlusion = false;
   uint32_t min_anisotropy = 1;
   bool high_precision_post = true;
+  float depth_of_field = 1.0f;
+  float bloom = 1.0f;
+  uint32_t msaa = 0;  // 0: the game's; else the sample count (1 = off)
 };
 Latched g_latched;
+// renut_anti_aliasing as the present pass reads it (another thread).
+std::atomic<uint32_t> g_post_anti_aliasing{0};
+
+// The sample counts the GPU can render 'format' with, together with the depth
+// format (asked once each).
+std::unordered_map<uint32_t, plume::RenderSampleCounts> g_supported_samples;
+std::unordered_set<uint64_t> g_msaa_warned;
+
+plume::RenderSampleCounts SupportedSampleCounts(plume::RenderFormat format) {
+  auto [it, inserted] = g_supported_samples.try_emplace(u32(format), plume::RenderSampleCount::COUNT_1);
+  if (inserted) {
+    if (plume::RenderDevice *device = Video::Device())
+      it->second = device->getSampleCountsSupported(format) & device->getSampleCountsSupported(DepthTargetFormat());
+  }
+  return it->second;
+}
+
+// The game's sample count of the target 'desc' describes (D3DMULTISAMPLE_TYPE
+// 0 none, 1 2x, 2 4x).
+plume::RenderSampleCounts GuestSampleCount(const d3d::SurfaceDesc &desc) {
+  switch ((u32(desc.SurfaceInfo) >> 16) & 3) {
+  case 1:
+    return plume::RenderSampleCount::COUNT_2;
+  case 2:
+    return plume::RenderSampleCount::COUNT_4;
+  default:
+    return plume::RenderSampleCount::COUNT_1;
+  }
+}
 
 } // namespace
 
@@ -105,6 +165,30 @@ void LatchGraphicsOptionsLocked() {
   const int anisotropy = std::atoi(REXCVAR_GET(renut_anisotropic_filtering).c_str());
   g_latched.min_anisotropy = anisotropy >= 2 ? uint32_t(anisotropy) : 1;
   g_latched.high_precision_post = REXCVAR_GET(renut_post_process_precision) != "Game";
+  const std::string &depth_of_field = REXCVAR_GET(renut_depth_of_field);
+  g_latched.depth_of_field = depth_of_field == "Off" ? 0.0f : depth_of_field == "Reduced" ? 0.5f : 1.0f;
+  const std::string &bloom = REXCVAR_GET(renut_bloom);
+  g_latched.bloom = bloom == "Off" ? 0.0f : bloom == "Reduced" ? 0.5f : 1.0f;
+  const std::string &msaa = REXCVAR_GET(renut_msaa);
+  const uint32_t samples = msaa == "Off" ? 1u : uint32_t(std::atoi(msaa.c_str()));
+  if (samples != g_latched.msaa) {
+    if (samples == 0)
+      RGPU_INFO("MSAA: the game's");
+    else if (samples == 1)
+      RGPU_INFO("MSAA: off");
+    else
+      RGPU_INFO("MSAA: {}x on the targets the game multisamples", samples);
+  }
+  g_latched.msaa = samples;
+  const std::string &anti_aliasing = REXCVAR_GET(renut_anti_aliasing);
+  g_post_anti_aliasing.store(anti_aliasing == "FXAA"   ? kPostAntiAliasingFxaa
+                             : anti_aliasing == "SMAA" ? kPostAntiAliasingSmaa
+                                                       : kPostAntiAliasingOff,
+                             std::memory_order_relaxed);
+}
+
+uint32_t PostAntiAliasing() {
+  return g_post_anti_aliasing.load(std::memory_order_relaxed);
 }
 
 RenderScale SurfaceRenderScale(const d3d::SurfaceDesc &desc, RenderScale resolution) {
@@ -129,8 +213,34 @@ plume::RenderFormat SurfaceColorFormat(const d3d::SurfaceDesc &desc) {
   return ColorTargetFormat(GpuColorFormat((u32(desc.ColorInfo) >> 16) & 0xF));
 }
 
+plume::RenderSampleCounts SurfaceSampleCount(const d3d::SurfaceDesc &desc, plume::RenderFormat format) {
+  const plume::RenderSampleCounts game = GuestSampleCount(desc);
+  if (game == plume::RenderSampleCount::COUNT_1 || g_latched.msaa == 0)
+    return game;
+  if (g_latched.msaa == 1)
+    return plume::RenderSampleCount::COUNT_1;
+  // The most samples up to the setting's that both this format and the depth
+  // format can do, so a draw's color and depth targets agree.
+  plume::RenderSampleCounts samples = g_latched.msaa;
+  const plume::RenderSampleCounts supported = SupportedSampleCounts(format);
+  while (samples > 1 && !(supported & samples))
+    samples >>= 1;
+  if (samples != g_latched.msaa && g_msaa_warned.insert(uint64_t(u32(format)) << 8 | g_latched.msaa).second)
+    RGPU_WARN("MSAA: the GPU can't do {}x for host format {} with the depth format; {}x instead", g_latched.msaa,
+              u32(format), samples);
+  return samples;
+}
+
 uint32_t MinAnisotropy() {
   return g_latched.min_anisotropy;
+}
+
+float DepthOfFieldStrength() {
+  return g_latched.depth_of_field;
+}
+
+float BloomStrength() {
+  return g_latched.bloom;
 }
 
 } // namespace renut::gpu

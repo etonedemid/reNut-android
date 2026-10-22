@@ -13,9 +13,12 @@
 #include <rex/cvar.h>
 
 #include "renut_engine/gpu/backend/backend.h"
+#include "renut_engine/gpu/backend/command_recorder.h"
 #include "renut_engine/gpu/backend/gpu_profile.h"
 #include "renut_engine/gpu/backend/native_window.h"
+#include "renut_engine/gpu/backend/smaa.h"
 #include "renut_engine/gpu/render/draw.h"
+#include "renut_engine/gpu/render/graphics_options.h"
 #include "renut_engine/gpu/log.h"
 #include "renut_engine/gpu/overlay/overlay_ui.h"
 #include "renut_engine/gpu/backend/render_thread.h"
@@ -122,12 +125,22 @@ void RecordScanOut(VideoState &s, const PresentImage &image, uint32_t out_w, uin
   push.texture_index = image.descriptor;
   push.sampler_index = kLinearClampSamplerSlot;
   push.param0 = s.output_gamma;
+  // 1: FXAA (renut_anti_aliasing; SMAA ran before, ApplySmaaLocked).
+  push.param1 = PostAntiAliasing() == kPostAntiAliasingFxaa ? 1.0f : 0.0f;
   cmd->setGraphicsPushConstants(0, &push, 0, sizeof(push));
   cmd->drawInstanced(3, 1, 0, 0);
 }
 
 // Records the back-buffer pass and presents. Caller holds s.mutex.
 void PresentLocked(VideoState &s, const PresentImage *image) {
+  // The swapchain is the render thread's again once the recording thread has
+  // presented the frame before (an acquire before that present would get the
+  // image being presented).
+  {
+    render_thread::WaitScope wait;
+    CommandRecorder::WaitForCall(s.present_call);
+    s.present_call = 0;
+  }
   // Logs, once, why the GPU stopped if an earlier submission faulted.
   ReportDeviceLost(s.device.get());
   if (!s.swap_chain) {
@@ -171,6 +184,11 @@ void PresentLocked(VideoState &s, const PresentImage *image) {
   static const uint32_t kProfileLabel = gpu_profile::Label("present and overlays");
   gpu_profile::Mark(s, kProfileLabel);
   plume::RenderCommandList *cmd = s.command_list;
+  // SMAA's passes come before the back buffer's (their own targets).
+  PresentImage scan;
+  const bool has_image = image && image->texture && image->descriptor != kInvalidDescriptor;
+  if (has_image)
+    scan = PostAntiAliasing() == kPostAntiAliasingSmaa ? ApplySmaaLocked(s, *image) : *image;
   plume::RenderTexture *back = s.swap_chain->getTexture(image_index);
   plume::RenderFramebuffer *back_fb = s.swap_framebuffers[image_index].get();
   const uint32_t out_w = s.swap_chain->getWidth();
@@ -182,8 +200,8 @@ void PresentLocked(VideoState &s, const PresentImage *image) {
   // Letterbox bars (and the whole output when there is no guest image).
   cmd->clearColor(0, plume::RenderColor(0.0f, 0.0f, 0.0f, 1.0f));
 
-  if (image && image->texture && image->descriptor != kInvalidDescriptor)
-    RecordScanOut(s, *image, out_w, out_h);
+  if (has_image)
+    RecordScanOut(s, scan, out_w, out_h);
 
   cmd->setViewports(plume::RenderViewport(0.0f, 0.0f, float(out_w), float(out_h)));
   cmd->setScissors(plume::RenderRect(0, 0, int32_t(out_w), int32_t(out_h)));
@@ -197,16 +215,23 @@ void PresentLocked(VideoState &s, const PresentImage *image) {
                 plume::RenderTextureBarrier(back, plume::RenderTextureLayout::PRESENT));
 
   plume::RenderCommandSemaphore *present_semaphore = s.present_semaphores[image_index].get();
+  const uint32_t submitted = s.frame;
   detail::SubmitAndAdvance(s, acquire, present_semaphore);
-  plume::RenderCommandSemaphore *waits[] = {present_semaphore};
-  bool presented;
-  {
+  const auto present = [swap_chain = s.swap_chain.get(), image_index, present_semaphore,
+                        resize = &s.resize_requested] {
+    plume::RenderCommandSemaphore *waits[] = {present_semaphore};
+    if (!swap_chain->present(image_index, waits, 1))
+      resize->store(true, std::memory_order_release);
+  };
+  if (CommandRecorder *recorder = s.recorders[submitted]) {
+    // After the submission, on the recording thread (where a vsync'd present
+    // holds until the display takes the frame).
+    s.present_call = recorder->RecordCall(present);
+  } else {
     // With vsync the present can hold until the display takes a frame.
     render_thread::WaitScope wait;
-    presented = s.swap_chain->present(image_index, waits, 1);
+    present();
   }
-  if (!presented)
-    s.resize_requested.store(true, std::memory_order_release);
 }
 
 } // namespace
@@ -300,6 +325,14 @@ void Video::PresentOverlayOnly() {
   // The last guest frame stays up while the guest stalls.
   const PresentImage image =
       s.guest_ready && s.last_front_buffer ? FrontBufferImageLocked(s.last_front_buffer) : PresentImage{};
+  if (s.guest_ready) {
+    static uint32_t logged = 0;
+    if (logged++ < 32) {
+      RGPU_WARN("Present: the game has not presented for {} ms; the UI presents {}",
+                now - s.last_guest_present_ms.load(std::memory_order_acquire),
+                image.texture ? "its last frame" : "black (no last frame)");
+    }
+  }
   PresentLocked(s, image.texture ? &image : nullptr);
 }
 

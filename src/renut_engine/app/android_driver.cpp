@@ -98,7 +98,127 @@ bool CallActivity(const char *method, const char *signature) {
     return result;
 }
 
+// The activity's class (FindClass on a worker thread would only see the
+// system classes) and a JNIEnv for this thread, attached by SDL.
+struct Java {
+    JNIEnv *env = nullptr;
+    jclass cls = nullptr;
+    Java() {
+        env = static_cast<JNIEnv *>(SDL_GetAndroidJNIEnv());
+        auto activity = static_cast<jobject>(SDL_GetAndroidActivity());
+        if (!env || !activity) {
+            env = nullptr;
+            return;
+        }
+        cls = env->GetObjectClass(activity);
+        env->DeleteLocalRef(activity);
+    }
+    ~Java() {
+        if (env && env->ExceptionCheck())
+            env->ExceptionClear();
+        if (cls)
+            env->DeleteLocalRef(cls);
+    }
+    jmethodID Static(const char *name, const char *signature) const {
+        return env ? env->GetStaticMethodID(cls, name, signature) : nullptr;
+    }
+    jbyteArray Bytes(const std::vector<uint8_t> &data) const {
+        jbyteArray array = env->NewByteArray(jsize(data.size()));
+        env->SetByteArrayRegion(array, 0, jsize(data.size()), reinterpret_cast<const jbyte *>(data.data()));
+        return array;
+    }
+    std::string String(jobject value) const {
+        if (!value)
+            return {};
+        const char *chars = env->GetStringUTFChars(static_cast<jstring>(value), nullptr);
+        std::string out = chars ? chars : "";
+        env->ReleaseStringUTFChars(static_cast<jstring>(value), chars);
+        env->DeleteLocalRef(value);
+        return out;
+    }
+    std::string TwoPaths(const char *method, const fs::path &a, const fs::path &b) const {
+        jmethodID id = Static(method, "(Ljava/lang/String;Ljava/lang/String;)Ljava/lang/String;");
+        if (!id)
+            return "no Java helper";
+        jstring ja = env->NewStringUTF(a.string().c_str()), jb = env->NewStringUTF(b.string().c_str());
+        std::string out = String(env->CallStaticObjectMethod(cls, id, ja, jb));
+        env->DeleteLocalRef(ja);
+        env->DeleteLocalRef(jb);
+        if (env->ExceptionCheck()) {
+            env->ExceptionClear();
+            return "Java error";
+        }
+        return out;
+    }
+};
+
 } // namespace
+
+std::optional<std::vector<uint8_t>> HttpGet(const std::string &url) {
+    Java java;
+    jmethodID id = java.Static("httpGet", "(Ljava/lang/String;)[B");
+    if (!id)
+        return std::nullopt;
+    jstring jurl = java.env->NewStringUTF(url.c_str());
+    auto body = static_cast<jbyteArray>(java.env->CallStaticObjectMethod(java.cls, id, jurl));
+    java.env->DeleteLocalRef(jurl);
+    if (!body || java.env->ExceptionCheck())
+        return std::nullopt;
+    std::vector<uint8_t> out(size_t(java.env->GetArrayLength(body)));
+    java.env->GetByteArrayRegion(body, 0, jsize(out.size()), reinterpret_cast<jbyte *>(out.data()));
+    java.env->DeleteLocalRef(body);
+    return out;
+}
+
+std::vector<uint8_t> DecodeImage(const std::vector<uint8_t> &data, int max_width, int &width,
+                                 int &height) {
+    width = height = 0;
+    Java java;
+    jmethodID id = java.Static("decodeImage", "([BI)[I");
+    if (!id || data.empty())
+        return {};
+    jbyteArray bytes = java.Bytes(data);
+    auto pixels = static_cast<jintArray>(java.env->CallStaticObjectMethod(java.cls, id, bytes, jint(max_width)));
+    java.env->DeleteLocalRef(bytes);
+    if (!pixels || java.env->ExceptionCheck())
+        return {};
+    const jsize n = java.env->GetArrayLength(pixels);
+    std::vector<jint> argb(size_t(n > 0 ? n : 0));
+    java.env->GetIntArrayRegion(pixels, 0, n, argb.data());
+    java.env->DeleteLocalRef(pixels);
+    if (argb.size() < 2 || argb.size() != 2 + size_t(argb[0]) * size_t(argb[1]))
+        return {};
+    width = argb[0];
+    height = argb[1];
+    std::vector<uint8_t> rgba(size_t(width) * height * 4);
+    for (size_t i = 0; i < size_t(width) * height; ++i) {
+        const uint32_t p = uint32_t(argb[2 + i]);
+        rgba[i * 4 + 0] = uint8_t(p >> 16);
+        rgba[i * 4 + 1] = uint8_t(p >> 8);
+        rgba[i * 4 + 2] = uint8_t(p);
+        rgba[i * 4 + 3] = uint8_t(p >> 24);
+    }
+    return rgba;
+}
+
+std::string Sha256(const std::vector<uint8_t> &data) {
+    Java java;
+    jmethodID id = java.Static("sha256", "([B)Ljava/lang/String;");
+    if (!id)
+        return {};
+    jbyteArray bytes = java.Bytes(data);
+    std::string out = java.String(java.env->CallStaticObjectMethod(java.cls, id, bytes));
+    java.env->DeleteLocalRef(bytes);
+    return out;
+}
+
+std::string ZipFolder(const fs::path &folder, const fs::path &zip) {
+    return Java().TwoPaths("zipFolder", folder, zip);
+}
+
+std::string Unzip(const fs::path &zip, const fs::path &folder) {
+    return Java().TwoPaths("unzip", zip, folder);
+}
 
 fs::path DriversFolder() { return FilesFolder() / "drivers"; }
 

@@ -19,11 +19,24 @@ set(RENUT_SOURCES
 	src/renut_engine/game/frameHooks.cpp
 	src/renut_engine/perf/frame_stats.cpp
 	src/renut_engine/game/frontend_debug_menu.cpp
+	src/renut_engine/game/graphics_menu.cpp
+	src/renut_engine/game/coop_menu.cpp
+	src/renut_engine/game/env_map_pool.cpp
 	src/renut_engine/game/level_pools.cpp
 	src/renut_engine/game/controllers.cpp
 	src/renut_engine/game/thread_slots.cpp
 	src/renut_engine/game/lod.cpp
+	src/renut_engine/game/field_of_view.cpp
+	src/renut_engine/game/mouse_camera.cpp
+	src/renut_engine/game/keyboard_input.cpp
+	src/renut_engine/game/custom_parts.cpp
+	src/renut_engine/game/part_classes.cpp
+	src/renut_engine/game/part_scripts.cpp
+	src/renut_engine/game/effect_log.cpp
+	src/renut_engine/game/mod_bundles.cpp
+	src/renut_engine/game/part_attach_log.cpp
 	src/renut_engine/online/identity.cpp
+	src/renut_engine/online/coop.cpp
 	src/renut_engine/online/trace.cpp
 	src/renut_engine/online/eos.cpp
 	src/renut_engine/online/friends.cpp
@@ -31,6 +44,7 @@ set(RENUT_SOURCES
 	src/renut_engine/online/qos.cpp
 	src/renut_engine/online/transport.cpp
 	src/renut_engine/app/crash_dump.cpp
+	src/renut_engine/mods/custom_parts.cpp
 	src/renut_engine/mods/json.cpp
 	src/renut_engine/mods/mod_device.cpp
 	src/renut_engine/mods/mod_loader.cpp
@@ -53,6 +67,28 @@ endif()
 
 rexglue_setup_target(renut)
 
+# Lua 5.4 (thirdparty/lua-5.4.7, lua.org, MIT) for mods' part scripts
+# (src/renut_engine/game/part_scripts.cpp). Built as C++: script errors unwind
+# with exceptions rather than longjmp across reNut's C++ frames.
+set(RENUT_LUA_DIR "${CMAKE_SOURCE_DIR}/thirdparty/lua-5.4.7/src")
+file(GLOB renut_lua_sources "${RENUT_LUA_DIR}/*.c")
+list(REMOVE_ITEM renut_lua_sources "${RENUT_LUA_DIR}/lua.c" "${RENUT_LUA_DIR}/luac.c")
+set_source_files_properties(${renut_lua_sources} PROPERTIES LANGUAGE CXX)
+add_library(renut_lua STATIC ${renut_lua_sources})
+target_include_directories(renut_lua PUBLIC "${RENUT_LUA_DIR}")
+if(MSVC)
+    target_compile_options(renut_lua PRIVATE /W0 /TP)
+else()
+    target_compile_options(renut_lua PRIVATE -w -x c++)
+endif()
+if(NINTENDO_SWITCH)
+    # devkitA64's limits.h has no LLONG_MAX, which luaconf.h takes for C99:
+    # build Lua as on Windows (C89: long and double, and long is 64-bit on
+    # aarch64). PUBLIC: the scripts' side must see the same types.
+    target_compile_definitions(renut_lua PUBLIC LUA_USE_C89)
+endif()
+target_link_libraries(renut PRIVATE renut_lua)
+
 if(NINTENDO_SWITCH)
     # Homebrew: renut.elf -> renut.nro for hbloader (run in title takeover).
     nx_generate_nacp(renut.nacp NAME "reNut" AUTHOR "reNut" VERSION "0.1.0")
@@ -65,7 +101,7 @@ if(ANDROID)
     add_subdirectory(thirdparty/libadrenotools EXCLUDE_FROM_ALL)
     target_link_libraries(renut PRIVATE adrenotools)
     add_dependencies(renut main_hook file_redirect_hook gsl_alloc_hook)
-    target_sources(renut PRIVATE src/renut_engine/app/android_driver.cpp src/renut_engine/app/xiso.cpp
+    target_sources(renut PRIVATE src/renut_engine/app/android_driver.cpp src/renut_engine/app/android_content.cpp src/renut_engine/app/xiso.cpp
         src/renut_engine/ui/touch_controls.cpp)
 endif()
 

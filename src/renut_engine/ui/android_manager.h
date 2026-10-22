@@ -1,19 +1,29 @@
 #pragma once
 // Android: the screen before the game, in NutStaller's blueprint style (its
 // bg.png art and the Andy font, from the APK's assets). Picks the game
-// folder, the Vulkan driver and the settings; Play starts the game.
+// folder, the Vulkan driver and the settings, gets workshop vehicles and part
+// mods, manages the save; Play starts the game.
 //
 // Drawn in the overlay's ImGui on a 1200x675 design canvas, scaled to fit the
-// screen like NutStaller's Viewbox.
+// screen's height like NutStaller's Viewbox; on wider screens the art's grid
+// carries on to the edges. A gamepad (or keyboard) moves through it too:
+// D-pad or stick to move, A to press, B back, LB/RB to change page, Start
+// to play.
 
 #include <algorithm>
+#include <atomic>
+#include <cmath>
 #include <cstring>
 #include <filesystem>
 #include <functional>
+#include <map>
+#include <mutex>
+#include <optional>
 #include <string>
 #include <thread>
 #include <vector>
 
+#include <SDL3/SDL_gamepad.h>
 #include <SDL3/SDL_iostream.h>
 #include <SDL3/SDL_keyboard.h>
 #include <rex/cvar.h>
@@ -22,6 +32,7 @@
 
 #include "imgui.h"
 #include "imgui_internal.h"
+#include "renut_engine/app/android_content.h"
 #include "renut_engine/app/android_driver.h"
 #include "renut_engine/app/path_config_store.h"
 #include "renut_engine/app/xiso.h"
@@ -38,6 +49,8 @@ public:
         extract_.cancel = true;
         if (extract_thread_.joinable())
             extract_thread_.join();
+        if (worker_.joinable())
+            worker_.join();
     }
 
     void Init(const std::string &app_name, const rex::PathConfig &defaults, CompletionFn on_play) {
@@ -51,6 +64,7 @@ public:
         selected_driver_ = renut::android::SelectedDriver();
         RefreshDrivers();
         RefreshIsos();
+        save_dir_ = renut::content::SaveDir(defaults.user_data_root);
         visible_ = true;
     }
 
@@ -62,12 +76,15 @@ public:
             return;
         }
         LoadAssets();
+        UploadPreviews();
+        const Pad pad = FeedGamepad();
         ImGuiIO &io = ImGui::GetIO();
         panel_x_ = 634.0f;
         panel_y_ = 281.0f;
         settings_h_ = 316.0f;
 
-        // The design canvas, letterboxed in the blueprint colour.
+        // The design canvas fills the screen's height, centred; wider screens
+        // get more of the blueprint grid at the sides.
         scale_ = std::min(io.DisplaySize.x / kW, io.DisplaySize.y / kH);
         origin_ = ImVec2((io.DisplaySize.x - kW * scale_) * 0.5f, (io.DisplaySize.y - kH * scale_) * 0.5f);
 
@@ -75,30 +92,49 @@ public:
         ImGui::SetNextWindowSize(io.DisplaySize);
         ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0, 0));
         ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 0.0f);
+        ImGui::PushStyleColor(ImGuiCol_NavCursor, ImVec4(0, 0, 0, 0));  // buttons draw their own
         ImGui::Begin("reNut manager", nullptr,
                      ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoMove |
                          ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoBringToFrontOnFocus |
                          ImGuiWindowFlags_NoScrollWithMouse | ImGuiWindowFlags_NoBackground);
         ImDrawList *dl = ImGui::GetWindowDrawList();
-        dl->AddRectFilled(ImVec2(0, 0), io.DisplaySize, kBlueprint);
+        Backdrop(dl, io.DisplaySize);
         if (bg_)
             dl->AddImage(bg_->GetTexRef(), P(0, 0), P(kW, kH));
 
-        if (NavButton("Set Up Game", 402, 335, 185, 32, page_ == Page::Game)) page_ = Page::Game;
-        if (NavButton("Drivers", 402, 371, 185, 32, page_ == Page::Drivers)) page_ = Page::Drivers;
-        if (NavButton("Settings", 402, 409, 185, 32, page_ == Page::Settings)) page_ = Page::Settings;
-        if (NavButton("Credits", 402, 445, 185, 32, page_ == Page::Credits)) page_ = Page::Credits;
-        if (NavButton("Play", 402, 496, 185, 36, false, 24)) Play();
+        if (pad.lb || pad.rb) {
+            const int n = int(Page::Count);
+            page_ = Page((int(page_) + (pad.rb ? 1 : n - 1)) % n);
+        }
+        if (pad.start && !confirm_)
+            Play();
+
+        const bool modal = confirm_.has_value();
+        if (modal)
+            ImGui::BeginDisabled();
+        static const char *kNav[] = {"Set Up Game", "Drivers", "Settings", "Workshop", "Saves", "Credits"};
+        for (int i = 0; i < int(Page::Count); ++i)
+            if (NavButton(kNav[i], 402, 318 + 33.0f * i, 185, 31, page_ == Page(i)))
+                page_ = Page(i);
+        if (NavButton("Play", 402, 522, 185, 36, false, 24)) Play();
 
         Panel(634, 281, 551, 382);
         switch (page_) {
         case Page::Game: DrawGame(); break;
         case Page::Drivers: DrawDrivers(); break;
         case Page::Settings: DrawSettings(); break;
+        case Page::Workshop: DrawWorkshop(); break;
+        case Page::Saves: DrawSaves(); break;
         case Page::Credits: DrawCredits(); break;
+        case Page::Count: break;
+        }
+        if (modal) {
+            ImGui::EndDisabled();
+            DrawConfirm(pad.b);
         }
 
         ImGui::End();
+        ImGui::PopStyleColor();
         ImGui::PopStyleVar(2);
 
         // Android's keyboard comes up only while a text field wants it.
@@ -110,9 +146,10 @@ public:
     }
 
 private:
-    enum class Page { Game, Drivers, Settings, Credits };
+    enum class Page { Game, Drivers, Settings, Workshop, Saves, Credits, Count };
     static constexpr float kW = 1200.0f, kH = 675.0f;
-    static constexpr ImU32 kBlueprint = IM_COL32(45, 82, 168, 255);
+    static constexpr ImU32 kBlueprint = IM_COL32(40, 78, 164, 255);  // bg.png's paper
+    static constexpr ImU32 kGrid = IM_COL32(58, 93, 172, 255);       // and its grid lines
     static constexpr ImU32 kInk = IM_COL32(255, 255, 255, 255);
     static constexpr ImU32 kInkDim = IM_COL32(255, 255, 255, 200);
     static constexpr ImU32 kShadow = IM_COL32(0, 0, 40, 120);
@@ -177,25 +214,74 @@ private:
         return s;
     }
 
-    // BkButton: a gradient slab, darker on the left, with a faint line under it.
-    bool NavButton(const std::string &label, float x, float y, float w, float h, bool selected,
-                   float size = 22) {
-        ImGui::SetCursorScreenPos(P(x, y));
-        ImGui::PushID(label.c_str());
-        ImGui::PushID(int(x * 1000 + y));
-        const bool clicked = ImGui::InvisibleButton("##b", S(w, h));
+    // The paper colour and the art's 30-unit grid (lines at x = 2 + 30k,
+    // y = 7 + 30k), over the whole screen; bg.png covers the middle.
+    void Backdrop(ImDrawList *dl, ImVec2 display) {
+        dl->AddRectFilled(ImVec2(0, 0), display, kBlueprint);
+        const float x0 = -origin_.x / scale_, x1 = (display.x - origin_.x) / scale_;
+        const float y0 = -origin_.y / scale_, y1 = (display.y - origin_.y) / scale_;
+        for (float x = 2 + 30 * std::floor((x0 - 2) / 30); x <= x1; x += 30)
+            dl->AddRectFilled(ImVec2(P(x, 0).x, 0), ImVec2(P(x + 2, 0).x, display.y), kGrid);
+        for (float y = 7 + 30 * std::floor((y0 - 7) / 30); y <= y1; y += 30)
+            dl->AddRectFilled(ImVec2(0, P(0, y).y), ImVec2(display.x, P(0, y + 2).y), kGrid);
+    }
+
+    // A press that turned into a scroll is no tap; a gamepad or key press is.
+    static bool Tapped(bool clicked, float scale) {
+        const float slop = 12.0f * scale;
+        return clicked && (!ImGui::IsMouseReleased(ImGuiMouseButton_Left) ||
+                           ImGui::GetIO().MouseDragMaxDistanceSqr[0] < slop * slop);
+    }
+
+    // The gamepad's (or keyboard's) cursor: NutStaller's dashed white outline.
+    void FocusRing(ImVec2 a, ImVec2 b) {
+        if (!ImGui::IsItemFocused() || !GImGui->NavCursorVisible)
+            return;
+        const float x = (a.x - origin_.x) / scale_, y = (a.y - origin_.y) / scale_;
+        Dashed(x + 1, y + 1, (b.x - a.x) / scale_ - 2, (b.y - a.y) / scale_ - 2, kInk, 3, 2);
+    }
+
+    // BkButton at a screen position: a gradient slab, darker on the left, with
+    // a faint line under it.
+    // id: a stable one for buttons in scrolled lists (else label + position).
+    bool SlabButton(const std::string &label, ImVec2 a, ImVec2 size_px, bool selected, float size,
+                    const char *id = nullptr) {
+        ImGui::SetCursorScreenPos(a);
+        ImGui::PushID(id ? id : label.c_str());
+        ImGui::PushID(id ? 0 : int(a.x) * 7919 + int(a.y));
+        const bool clicked = Tapped(ImGui::InvisibleButton("##b", size_px), scale_);
         ImGui::PopID();
         ImGui::PopID();
+        const ImVec2 b(a.x + size_px.x, a.y + size_px.y);
         const bool down = ImGui::IsItemActive();
-        const bool hot = ImGui::IsItemHovered();
+        const bool hot = ImGui::IsItemHovered() || (ImGui::IsItemFocused() && GImGui->NavCursorVisible);
         const int left = selected || down ? 250 : hot ? 225 : 185;
         const int right = selected || down ? 90 : hot ? 45 : 15;
         ImDrawList *dl = ImGui::GetWindowDrawList();
         const ImU32 l = IM_COL32(4, 10, 34, left), r = IM_COL32(4, 10, 34, right);
-        dl->AddRectFilledMultiColor(P(x, y), P(x + w, y + h), l, r, r, l);
-        dl->AddLine(P(x, y + h - 0.5f), P(x + w, y + h - 0.5f), kLineDim);
-        Text(Upper(label), x + 10, y + 1, w - 14, h - 2, size);
+        dl->AddRectFilledMultiColor(a, b, l, r, r, l);
+        dl->AddLine(ImVec2(a.x, b.y - 0.5f * scale_), ImVec2(b.x, b.y - 0.5f * scale_), kLineDim);
+        TextAt(Upper(label), ImVec2(a.x + 10 * scale_, a.y + scale_), size_px.x - 14 * scale_,
+               size_px.y - 2 * scale_, size);
+        FocusRing(a, b);
         return clicked;
+    }
+
+    bool NavButton(const std::string &label, float x, float y, float w, float h, bool selected,
+                   float size = 22) {
+        return SlabButton(label, P(x, y), S(w, h), selected, size);
+    }
+
+    // Text at a screen position (for scrolled lists), one line, clipped.
+    void TextAt(const std::string &text, ImVec2 pos, float w_px, float h_px, float size,
+                ImU32 ink = kInk) {
+        ImDrawList *dl = ImGui::GetWindowDrawList();
+        const float px = size * scale_;
+        const ImVec4 clip(pos.x, pos.y, pos.x + w_px, pos.y + h_px);
+        const ImVec2 at(pos.x, pos.y + (h_px - px) * 0.5f);
+        dl->AddText(Font(), px, ImVec2(at.x + 2 * scale_, at.y + 2 * scale_), kShadow, text.c_str(), nullptr,
+                    0, &clip);
+        dl->AddText(Font(), px, at, ink, text.c_str(), nullptr, 0, &clip);
     }
 
     // BkPagePanel: translucent navy with a dashed border.
@@ -244,6 +330,7 @@ private:
                             ImVec2(6 * scale_, (h * scale_ - 18 * scale_) * 0.5f));
         ImGui::SetNextItemWidth(w * scale_);
         const bool changed = ImGui::InputText(id, buf.data(), kBufSize);
+        FocusRing(ImGui::GetItemRectMin(), ImGui::GetItemRectMax());
         ImGui::PopStyleVar();
         ImGui::PopStyleColor(3);
         ImGui::PopFont();
@@ -450,7 +537,7 @@ private:
 
         ImGui::SetCursorScreenPos(P(panel_x_ + 12, panel_y_ + 54));
         ImGui::PushStyleColor(ImGuiCol_ChildBg, ImVec4(0, 0, 0, 0));
-        ImGui::BeginChild("##settings", S(527, settings_h_), ImGuiChildFlags_None,
+        ImGui::BeginChild("##settings", S(527, settings_h_), ImGuiChildFlags_NavFlattened,
                           ImGuiWindowFlags_NoScrollbar);
         // Touch scrolling: drag the list.
         if (ImGui::IsWindowHovered(ImGuiHoveredFlags_AllowWhenBlockedByActiveItem) &&
@@ -483,12 +570,10 @@ private:
             ImGui::PushID(f.name.c_str());
             const ImVec2 size = S(210, 30);
             const ImVec2 a = ImGui::GetCursorScreenPos();
-            // A press that turned into a scroll is no tap.
-            const float slop = 12.0f * scale_;
-            const bool tapped = ImGui::InvisibleButton("##v", size) &&
-                                ImGui::GetIO().MouseDragMaxDistanceSqr[0] < slop * slop;
+            const bool tapped = Tapped(ImGui::InvisibleButton("##v", size), scale_);
             const ImU32 slab = ImGui::IsItemActive() ? IM_COL32(30, 55, 130, 255) : kNavy;
             dl->AddRectFilled(a, ImVec2(a.x + size.x, a.y + size.y), slab);
+            FocusRing(a, ImVec2(a.x + size.x, a.y + size.y));
             std::string shown = value;
             if (f.type == rex::cvar::FlagType::Boolean)
                 shown = value == "true" ? "ON" : "OFF";
@@ -531,10 +616,521 @@ private:
             "VALCOMDRIFTY - RENUT LOGO",
             "OLIEGAMERTV - NUTS AND BOLTS DOCUMENTATION",
             "BYLAWS - LIBADRENOTOOLS",
-            "ANDROID PORT - ETONEDEMID",
+            "ANDROID PORT, NUTSTALLER, WORKSHOP - ETONEDEMID",
         };
         for (int i = 0; i < int(std::size(kLines)); i++)
             Label(kLines[i], 16, 88 + i * 26.0f, 516, 24, 16, true);
+    }
+
+    // --- gamepad -------------------------------------------------------------------
+
+    // Presses this frame the manager handles itself (ImGui gets the D-pad, the
+    // left stick as a D-pad, A and B).
+    struct Pad {
+        bool lb = false, rb = false, start = false, b = false;
+    };
+
+    Pad FeedGamepad() {
+        ImGuiIO &io = ImGui::GetIO();
+        io.ConfigFlags |= ImGuiConfigFlags_NavEnableGamepad | ImGuiConfigFlags_NavEnableKeyboard;
+        io.BackendFlags |= ImGuiBackendFlags_HasGamepad;
+        enum { kUp, kDown, kLeft, kRight, kA, kB, kLB, kRB, kStart, kCount };
+        static constexpr SDL_GamepadButton kButtons[kCount] = {
+            SDL_GAMEPAD_BUTTON_DPAD_UP,       SDL_GAMEPAD_BUTTON_DPAD_DOWN,      SDL_GAMEPAD_BUTTON_DPAD_LEFT,
+            SDL_GAMEPAD_BUTTON_DPAD_RIGHT,    SDL_GAMEPAD_BUTTON_SOUTH,          SDL_GAMEPAD_BUTTON_EAST,
+            SDL_GAMEPAD_BUTTON_LEFT_SHOULDER, SDL_GAMEPAD_BUTTON_RIGHT_SHOULDER, SDL_GAMEPAD_BUTTON_START};
+        static constexpr ImGuiKey kKeys[kCount] = {
+            ImGuiKey_GamepadDpadUp, ImGuiKey_GamepadDpadDown,  ImGuiKey_GamepadDpadLeft,
+            ImGuiKey_GamepadDpadRight, ImGuiKey_GamepadFaceDown, ImGuiKey_GamepadFaceRight,
+            ImGuiKey_None,          ImGuiKey_None,             ImGuiKey_None};
+        bool down[kCount] = {};
+        int count = 0;
+        if (SDL_JoystickID *ids = SDL_GetGamepads(&count)) {
+            for (int i = 0; i < count; ++i) {
+                SDL_Gamepad *pad = SDL_GetGamepadFromID(ids[i]);
+                if (!pad)
+                    pad = SDL_OpenGamepad(ids[i]);  // left open; SDL counts the opens
+                if (!pad)
+                    continue;
+                for (int k = 0; k < kCount; ++k)
+                    down[k] |= SDL_GetGamepadButton(pad, kButtons[k]);
+                const int x = SDL_GetGamepadAxis(pad, SDL_GAMEPAD_AXIS_LEFTX);
+                const int y = SDL_GetGamepadAxis(pad, SDL_GAMEPAD_AXIS_LEFTY);
+                down[kLeft] |= x < -20000;
+                down[kRight] |= x > 20000;
+                down[kUp] |= y < -20000;
+                down[kDown] |= y > 20000;
+            }
+            SDL_free(ids);
+        }
+        Pad pad;
+        for (int k = 0; k < kCount; ++k) {
+            if (down[k] == pad_down_[k])
+                continue;
+            pad_down_[k] = down[k];
+            if (kKeys[k] != ImGuiKey_None)
+                io.AddKeyEvent(kKeys[k], down[k]);
+            if (down[k]) {
+                pad.lb |= k == kLB;
+                pad.rb |= k == kRB;
+                pad.start |= k == kStart;
+                pad.b |= k == kB;
+            }
+        }
+        return pad;
+    }
+
+    // --- confirmation --------------------------------------------------------------
+
+    struct Confirm {
+        std::string text;
+        std::function<void()> yes;
+        bool focused = false;
+    };
+
+    void Ask(std::string text, std::function<void()> yes) { confirm_ = Confirm{std::move(text), std::move(yes)}; }
+
+    void DrawConfirm(bool cancel) {
+        ImGuiIO &io = ImGui::GetIO();
+        ImGui::GetWindowDrawList()->AddRectFilled(ImVec2(0, 0), io.DisplaySize, IM_COL32(0, 0, 20, 140));
+        Panel(330, 245, 540, 185);
+        Text(confirm_->text, 352, 260, 496, 110, 18);
+        if (!confirm_->focused) {
+            ImGui::SetKeyboardFocusHere();
+            confirm_->focused = true;
+        }
+        const bool yes = NavButton("Yes", 548, 380, 140, 34, false);
+        const bool no = NavButton("No", 704, 380, 140, 34, false);
+        if (yes) {
+            auto action = std::move(confirm_->yes);
+            confirm_.reset();
+            action();
+        } else if (no || cancel) {
+            confirm_.reset();
+        }
+    }
+
+    // --- scrolled lists ------------------------------------------------------------
+
+    struct Row {
+        std::string title, line1, line2, line3, preview, button;
+        std::function<void()> action;
+    };
+
+    // Rows with a preview, four lines and a button, dragged to scroll.
+    void DrawRows(const char *id, float x, float y, float w, float h, const std::vector<Row> &rows,
+                  const std::string &empty) {
+        ImGui::SetCursorScreenPos(P(panel_x_ + x, panel_y_ + y));
+        ImGui::PushStyleColor(ImGuiCol_ChildBg, ImVec4(0, 0, 0, 0));
+        ImGui::BeginChild(id, S(w, h), ImGuiChildFlags_NavFlattened, ImGuiWindowFlags_NoScrollbar);
+        if (ImGui::IsWindowHovered(ImGuiHoveredFlags_AllowWhenBlockedByActiveItem) &&
+            ImGui::IsMouseDragging(ImGuiMouseButton_Left, 4.0f))
+            ImGui::SetScrollY(ImGui::GetScrollY() - ImGui::GetIO().MouseDelta.y);
+        ImDrawList *dl = ImGui::GetWindowDrawList();
+        const ImVec2 top = ImGui::GetCursorScreenPos();
+        const float row_h = 88;
+        if (rows.empty())
+            TextAt(empty, top, w * scale_, 24 * scale_, 15, kInkDim);
+        std::lock_guard lock(mutex_);
+        for (size_t i = 0; i < rows.size(); ++i) {
+            const Row &r = rows[i];
+            const ImVec2 at(top.x, top.y + i * row_h * scale_);
+            auto D = [&](float dx, float dy) { return ImVec2(at.x + dx * scale_, at.y + dy * scale_); };
+            dl->AddRectFilled(D(0, 6), D(128, 78), kNavy);
+            auto preview = previews_.find(r.preview);
+            if (preview != previews_.end() && preview->second.tex) {
+                const Preview &pv = preview->second;
+                const float k = std::min(128.0f / pv.w, 72.0f / pv.h);
+                const float pw = pv.w * k, ph = pv.h * k;
+                dl->AddImage(pv.tex->GetTexRef(), D((128 - pw) / 2, 6 + (72 - ph) / 2),
+                             D((128 + pw) / 2, 6 + (72 + ph) / 2));
+            }
+            TextAt(Upper(r.title), D(138, 2), 255 * scale_, 24 * scale_, 19);
+            TextAt(Upper(r.line1), D(138, 26), 255 * scale_, 18 * scale_, 14, kInkDim);
+            TextAt(r.line2, D(138, 44), 255 * scale_, 18 * scale_, 14, kInkDim);
+            TextAt(Upper(r.line3), D(138, 62), 255 * scale_, 18 * scale_, 13, kInkDim);
+            dl->AddLine(D(0, row_h - 2), D(w - 4, row_h - 2), kLineDim);
+            if (!r.button.empty()) {
+                ImGui::PushID(int(i));
+                if (SlabButton(r.button, D(w - 122, 26), S(110, 32), false, 18, "act") && !busy_)
+                    pending_ = r.action;  // run after the lock is let go
+                ImGui::PopID();
+            }
+        }
+        ImGui::SetCursorScreenPos(ImVec2(top.x, top.y + rows.size() * row_h * scale_));
+        ImGui::Dummy(ImVec2(1, 1));
+        ImGui::EndChild();
+        ImGui::PopStyleColor();
+    }
+
+    // --- workshop ------------------------------------------------------------------
+
+    struct Preview {
+        std::vector<uint8_t> rgba;
+        int w = 0, h = 0;
+        ImTextureData *tex = nullptr;
+    };
+
+    // One job at a time off the render thread (downloads).
+    void StartJob(std::function<void()> job) {
+        if (busy_)
+            return;
+        if (worker_.joinable())
+            worker_.join();
+        busy_ = true;
+        worker_ = std::thread([this, job = std::move(job)] {
+            job();
+            busy_ = false;
+        });
+    }
+
+    void SetStatus(std::string status) {
+        std::lock_guard lock(mutex_);
+        status_ = std::move(status);
+    }
+
+    // Under mutex_.
+    void LoadInstalledLocked() {
+        installed_ = renut::content::LoadInstalled(save_dir_);
+        installed_mods_ = renut::content::LoadInstalledMods(save_dir_);
+    }
+
+    void RefreshWorkshop() {
+        SetStatus("LOADING THE WORKSHOP...");
+        StartJob([this] {
+            std::string error;
+            auto index = renut::content::FetchIndex(&error);
+            {
+                std::lock_guard lock(mutex_);
+                LoadInstalledLocked();
+                if (index)
+                    index_ = *index;
+                status_ = index ? "" : "ERROR: " + Upper(error);
+            }
+            if (!index)
+                return;
+            std::vector<std::string> paths;
+            for (const auto &b : index->blueprints)
+                paths.push_back(b.preview);
+            for (const auto &m : index->mods)
+                paths.push_back(m.preview);
+            for (const auto &path : paths) {
+                {
+                    std::lock_guard lock(mutex_);
+                    if (path.empty() || previews_.count(path))
+                        continue;
+                }
+                Preview preview;
+                if (auto data = renut::content::Download(path))
+                    preview.rgba = renut::android::DecodeImage(*data, 320, preview.w, preview.h);
+                std::lock_guard lock(mutex_);
+                previews_[path] = std::move(preview);
+            }
+        });
+    }
+
+    // Decoded previews become textures here, on the render thread.
+    void UploadPreviews() {
+        std::lock_guard lock(mutex_);
+        for (auto &[path, p] : previews_) {
+            if (p.tex || p.rgba.empty())
+                continue;
+            p.tex = IM_NEW(ImTextureData)();
+            p.tex->Create(ImTextureFormat_RGBA32, p.w, p.h);
+            std::memcpy(p.tex->GetPixels(), p.rgba.data(), p.rgba.size());
+            ImGui::RegisterUserTexture(p.tex);
+            p.rgba = {};
+        }
+    }
+
+    void RunWorkshopJob(std::string doing, std::function<bool(std::string *)> job, std::string done) {
+        SetStatus(Upper(doing));
+        StartJob([this, job = std::move(job), done = std::move(done)] {
+            std::string error;
+            const bool ok = job(&error);
+            std::lock_guard lock(mutex_);
+            LoadInstalledLocked();
+            status_ = ok ? Upper(done) : "ERROR: " + Upper(error);
+        });
+    }
+
+    std::string ModName(const renut::content::Index &index, const std::string &id) const {
+        for (const auto &m : index.mods)
+            if (m.id == id)
+                return m.name;
+        return "mod " + id;
+    }
+
+    static std::string Join(const std::vector<std::string> &items) {
+        std::string out;
+        for (const auto &i : items)
+            out += (out.empty() ? "" : ", ") + i;
+        return out;
+    }
+
+    void DrawWorkshop() {
+        Label("WORKSHOP", 18, 16, 300, 30, 26);
+        if (!workshop_loaded_) {
+            workshop_loaded_ = true;
+            RefreshWorkshop();
+        }
+        if (Button(busy_ ? "Working..." : "Refresh", 400, 14, 135, 30, 18) && !busy_)
+            RefreshWorkshop();
+        static const char *kTabs[] = {"Vehicles", "Parts", "Installed"};
+        for (int i = 0; i < 3; ++i)
+            if (Button(kTabs[i], 19 + i * 132.0f, 52, 126, 28, 18, workshop_tab_ == i))
+                workshop_tab_ = i;
+
+        std::optional<renut::content::Index> index;
+        std::vector<renut::content::Installed> installed;
+        std::vector<renut::content::InstalledMod> installed_mods;
+        std::string status;
+        {
+            std::lock_guard lock(mutex_);
+            index = index_;
+            installed = installed_;
+            installed_mods = installed_mods_;
+            status = status_;
+        }
+        auto has = [&](const std::string &id) {
+            return std::any_of(installed.begin(), installed.end(), [&](const auto &i) { return i.id == id; });
+        };
+        auto has_mod = [&](const std::string &mod_id) {
+            return std::any_of(installed_mods.begin(), installed_mods.end(),
+                               [&](const auto &m) { return m.mod_id == mod_id; });
+        };
+        const auto save = save_dir_;
+        std::vector<Row> rows;
+        std::string empty;
+        if (workshop_tab_ == 0 && index) {
+            empty = "NO VEHICLES IN THE WORKSHOP YET";
+            for (const auto &e : index->blueprints) {
+                std::vector<std::string> needs;
+                for (const auto &id : e.requires_mods)
+                    needs.push_back(ModName(*index, id));
+                for (const auto &m : e.missing)
+                    needs.push_back(m + " - not in the workshop");
+                Row r{e.name, "by " + e.author + " - " + std::to_string(e.parts) + " parts", e.description,
+                      needs.empty() ? "" : "needs: " + Join(needs), e.preview, has(e.id) ? "Remove" : "Install"};
+                if (has(e.id))
+                    r.action = [this, save, e] {
+                        RunWorkshopJob("removing " + e.name + "...", [save, e](std::string *) {
+                            renut::content::RemoveVehicle(save, e.id);
+                            return true;
+                        }, "removed " + e.name);
+                    };
+                else
+                    r.action = [this, save, e, idx = *index] {
+                        RunWorkshopJob("installing " + e.name + "...", [save, e, idx](std::string *error) {
+                            return renut::content::InstallVehicle(save, e, idx, error);
+                        }, "installed " + e.name + " - it is in the garage");
+                    };
+                rows.push_back(std::move(r));
+            }
+        } else if (workshop_tab_ == 1 && index) {
+            empty = "NO PART MODS IN THE WORKSHOP YET";
+            for (const auto &m : index->mods) {
+                Row r{m.name,
+                      "by " + m.author + (m.version.empty() ? "" : " - v" + m.version) + " - " +
+                          std::to_string(m.part_names.size()) + " parts",
+                      m.description, "parts: " + Join(m.part_names), m.preview,
+                      has_mod(m.mod_id) ? "Remove" : "Install"};
+                if (has_mod(m.mod_id))
+                    r.action = [this, save, m] {
+                        RunWorkshopJob("removing " + m.name + "...", [save, m](std::string *) {
+                            renut::content::RemoveMod(save, m.mod_id);
+                            return true;
+                        }, "removed " + m.name);
+                    };
+                else
+                    r.action = [this, save, m] {
+                        RunWorkshopJob("installing " + m.name + "...", [save, m](std::string *error) {
+                            return renut::content::InstallMod(save, m, error);
+                        }, "installed " + m.name);
+                    };
+                rows.push_back(std::move(r));
+            }
+        } else if (workshop_tab_ == 2) {
+            empty = "NOTHING FROM THE WORKSHOP YET";
+            for (const auto &i : installed) {
+                Row r{i.name, "vehicle by " + i.author + " - " + std::to_string(i.parts) + " parts", i.description,
+                      "", i.preview, "Remove"};
+                r.action = [this, save, i] {
+                    RunWorkshopJob("removing " + i.name + "...", [save, i](std::string *) {
+                        renut::content::RemoveVehicle(save, i.id);
+                        return true;
+                    }, "removed " + i.name);
+                };
+                rows.push_back(std::move(r));
+            }
+            for (const auto &m : installed_mods) {
+                Row r{m.name, "part mod by " + m.author + " - " + std::to_string(m.parts) + " parts",
+                      m.description, "", m.preview, "Remove"};
+                r.action = [this, save, m] {
+                    RunWorkshopJob("removing " + m.name + "...", [save, m](std::string *) {
+                        renut::content::RemoveMod(save, m.mod_id);
+                        return true;
+                    }, "removed " + m.name);
+                };
+                rows.push_back(std::move(r));
+            }
+        }
+        DrawRows("##workshop", 12, 88, 527, 258, rows, empty);
+        if (pending_) {
+            auto action = std::move(pending_);
+            pending_ = nullptr;
+            action();
+        }
+        Label(status.empty() ? "SHARE VEHICLES AND PARTS FROM NUTSTALLER ON A PC" : status, 19, 350, 513, 24, 15,
+              true);
+    }
+
+    // --- saves ---------------------------------------------------------------------
+
+    void RefreshSaves() {
+        saves_loaded_ = true;
+        save_summary_ = renut::content::Summarize(save_dir_);
+        backups_ = renut::content::Backups();
+        imports_ = renut::content::ImportCandidates();
+        renaming_ = -1;
+    }
+
+    static std::string Kb(uint64_t bytes) { return std::to_string(std::max<uint64_t>(1, bytes / 1024)) + " KB"; }
+
+    void DoReplace(const std::filesystem::path &source, const std::string &note, const std::string &done) {
+        std::filesystem::path kept;
+        std::string error;
+        if (renut::content::Replace(save_dir_, source, note, &kept, &error))
+            saves_status_ = kept.empty() ? done : done + " - THE SAVE BEFORE IT IS IN " + Upper(kept.filename().string());
+        else
+            saves_status_ = "ERROR: " + Upper(error);
+        RefreshSaves();
+    }
+
+    void DrawSaves() {
+        Label("SAVES", 18, 16, 300, 30, 26);
+        if (!renut::android::HasStorageAccess()) {
+            Label("BACKUPS GO TO /SDCARD/RENUT/BACKUPS: RENUT NEEDS FILE ACCESS", 19, 56, 513, 24, 16, true);
+            if (Button("Allow file access", 19, 88, 240, 32))
+                renut::android::RequestStorageAccess();
+            return;
+        }
+        if (!saves_loaded_)
+            RefreshSaves();
+        const auto &s = save_summary_;
+        Label(s.bytes == 0 ? "NO SAVE YET - PLAY THE GAME ONCE, OR IMPORT ONE"
+                           : std::to_string(s.slots) + " SAVE SLOT(S) - " + std::to_string(s.vehicles) +
+                                 " VEHICLES - " + std::to_string(s.replays) + " REPLAYS - " + Kb(s.bytes),
+              19, 48, 513, 24, 16);
+        if (Button("Back up now", 19, 80, 180, 30, 18)) {
+            std::string error;
+            const auto file = renut::content::BackUp(save_dir_, "", &error);
+            saves_status_ = file.empty() ? "ERROR: " + Upper(error) : "BACKED UP TO " + Upper(file.filename().string());
+            RefreshSaves();
+        }
+        if (Button(saves_import_ ? "Show backups" : "Import a save...", 205, 80, 200, 30, 18, saves_import_)) {
+            saves_import_ = !saves_import_;
+            RefreshSaves();
+        }
+        if (Button("Rescan", 411, 80, 124, 30, 18))
+            RefreshSaves();
+
+        ImGui::SetCursorScreenPos(P(panel_x_ + 12, panel_y_ + 120));
+        ImGui::PushStyleColor(ImGuiCol_ChildBg, ImVec4(0, 0, 0, 0));
+        ImGui::BeginChild("##saves", S(527, 222), ImGuiChildFlags_NavFlattened, ImGuiWindowFlags_NoScrollbar);
+        if (ImGui::IsWindowHovered(ImGuiHoveredFlags_AllowWhenBlockedByActiveItem) &&
+            ImGui::IsMouseDragging(ImGuiMouseButton_Left, 4.0f))
+            ImGui::SetScrollY(ImGui::GetScrollY() - ImGui::GetIO().MouseDelta.y);
+        const ImVec2 top = ImGui::GetCursorScreenPos();
+        const float row_h = 38;
+        std::function<void()> after;  // list changes wait until the loop is done
+        int n = 0;
+        auto at = [&](float dx) { return ImVec2(top.x + dx * scale_, top.y + (n * row_h + 3) * scale_); };
+        if (saves_import_) {
+            if (imports_.empty())
+                TextAt("PUT A SAVE FOLDER (4D5307ED, OR ONE WITH IT INSIDE) IN /SDCARD/RENUT", at(0), 520 * scale_,
+                       30 * scale_, 14, kInkDim);
+            for (const auto &dir : imports_) {
+                ImGui::PushID(n);
+                TextAt(Upper(dir.filename().string()), at(4), 380 * scale_, 30 * scale_, 17);
+                if (SlabButton("Import", at(400), S(110, 30), false, 17, "import"))
+                    after = [this, dir] {
+                        Ask("Replace your save with /sdcard/reNut/" + dir.filename().string() +
+                                "?\n\nYour current save is backed up first.",
+                            [this, dir] { DoReplace(dir, "import", "IMPORTED"); });
+                    };
+                ImGui::PopID();
+                ++n;
+            }
+        } else {
+            if (backups_.empty())
+                TextAt("NO BACKUPS YET - THEY GO TO /SDCARD/RENUT/BACKUPS", at(0), 520 * scale_, 30 * scale_, 14,
+                       kInkDim);
+            for (int i = 0; i < int(backups_.size()); ++i) {
+                const auto b = backups_[i];
+                const std::string when = b.made.empty() ? b.file.filename().string() : b.made;
+                ImGui::PushID(i);
+                if (renaming_ == i) {
+                    ImGui::SetCursorScreenPos(at(0));
+                    ImGui::PushFont(Font(), 16 * scale_);
+                    ImGui::PushStyleColor(ImGuiCol_FrameBg, ImGui::ColorConvertU32ToFloat4(kNavy));
+                    ImGui::SetNextItemWidth(226 * scale_);
+                    if (rename_focus_) {
+                        ImGui::SetKeyboardFocusHere();
+                        rename_focus_ = false;
+                    }
+                    const bool enter = ImGui::InputText("##name", rename_buf_.data(), kBufSize,
+                                                        ImGuiInputTextFlags_EnterReturnsTrue);
+                    FocusRing(ImGui::GetItemRectMin(), ImGui::GetItemRectMax());
+                    ImGui::PopStyleColor();
+                    ImGui::PopFont();
+                    if (SlabButton("OK", at(236), S(84, 30), false, 16, "ok") || enter)
+                        after = [this, b] {
+                            std::string error;
+                            const auto to = renut::content::RenameBackup(b.file, rename_buf_.c_str(), &error);
+                            saves_status_ = to.empty() ? "ERROR: " + Upper(error)
+                                                       : "RENAMED TO " + Upper(to.filename().string());
+                            RefreshSaves();
+                        };
+                    if (SlabButton("Cancel", at(326), S(88, 30), false, 16, "cancel"))
+                        after = [this] { renaming_ = -1; };
+                } else {
+                    TextAt(b.note.empty() || b.made.empty() ? (b.made.empty() ? Upper(b.note) : when + " - " + Kb(b.bytes))
+                                                            : Upper(b.note) + " (" + when.substr(5, 11) + ")",
+                           at(4), 226 * scale_, 30 * scale_, 15);
+                    if (SlabButton("Rename", at(236), S(84, 30), false, 16, "rename"))
+                        after = [this, i, b] {
+                            renaming_ = i;
+                            rename_focus_ = true;
+                            SetBuf(rename_buf_, b.made.empty() ? b.file.stem().string() : b.note);
+                        };
+                    if (SlabButton("Restore", at(326), S(88, 30), false, 16, "restore"))
+                        after = [this, b, when] {
+                            Ask("Replace your save with the backup from " + when +
+                                    "?\n\nYour current save is backed up first.",
+                                [this, b] { DoReplace(b.file, "restore", "RESTORED"); });
+                        };
+                }
+                if (SlabButton("Delete", at(420), S(76, 30), false, 16, "delete"))
+                    after = [this, b, when] {
+                        Ask("Delete the backup from " + when + "? This cannot be undone.", [this, b] {
+                            std::error_code ec;
+                            std::filesystem::remove(b.file, ec);
+                            saves_status_ = ec ? "ERROR: " + Upper(ec.message()) : "BACKUP DELETED";
+                            RefreshSaves();
+                        });
+                    };
+                ImGui::PopID();
+                ++n;
+            }
+        }
+        ImGui::SetCursorScreenPos(ImVec2(top.x, top.y + n * row_h * scale_));
+        ImGui::Dummy(ImVec2(1, 1));
+        ImGui::EndChild();
+        ImGui::PopStyleColor();
+        if (after)
+            after();
+        Label(saves_status_.empty() ? Upper(save_dir_.string()) : saves_status_, 19, 350, 513, 24, 14, true);
     }
 
     // --- in game: the side menu on the back gesture ------------------------------
@@ -562,6 +1158,10 @@ private:
         if (!menu_open_)
             return;
         LoadAssets();
+        if (FeedGamepad().b && menu_page_ == 0) {
+            SetMenuOpen(false);
+            return;
+        }
         ImGuiIO &io = ImGui::GetIO();
         scale_ = std::min(io.DisplaySize.x / kW, io.DisplaySize.y / kH);
         origin_ = ImVec2(0, (io.DisplaySize.y - kH * scale_) * 0.5f);
@@ -573,6 +1173,7 @@ private:
         ImGui::SetNextWindowSize(io.DisplaySize);
         ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0, 0));
         ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 0.0f);
+        ImGui::PushStyleColor(ImGuiCol_NavCursor, ImVec4(0, 0, 0, 0));
         ImGui::Begin("reNut side menu", nullptr,
                      ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoMove |
                          ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoScrollWithMouse |
@@ -619,6 +1220,7 @@ private:
         }
 
         ImGui::End();
+        ImGui::PopStyleColor();
         ImGui::PopStyleVar(2);
     }
 
@@ -679,4 +1281,32 @@ private:
     renut::xiso::Progress extract_;
     std::thread extract_thread_;
     std::string extract_message_;  // written by the worker under extract_.mutex
+
+    bool pad_down_[9] = {};
+    std::optional<Confirm> confirm_;
+    std::filesystem::path save_dir_;
+
+    // workshop: the worker writes these under mutex_
+    std::mutex mutex_;
+    std::thread worker_;
+    std::atomic<bool> busy_{false};
+    std::optional<renut::content::Index> index_;
+    std::vector<renut::content::Installed> installed_;
+    std::vector<renut::content::InstalledMod> installed_mods_;
+    std::map<std::string, Preview> previews_;
+    std::string status_;
+    bool workshop_loaded_ = false;
+    int workshop_tab_ = 0;
+    std::function<void()> pending_;
+
+    // saves
+    bool saves_loaded_ = false;
+    bool saves_import_ = false;
+    renut::content::SaveSummary save_summary_;
+    std::vector<renut::content::Backup> backups_;
+    std::vector<std::filesystem::path> imports_;
+    std::string saves_status_;
+    int renaming_ = -1;
+    bool rename_focus_ = false;
+    std::string rename_buf_;
 };

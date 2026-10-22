@@ -1,7 +1,6 @@
 /**
  * @file    gpu/render/surfaces.cpp
  */
-#include "renut_engine/app/platform_defaults.h"
 #include "renut_engine/gpu/render/surfaces.h"
 
 #include <algorithm>
@@ -24,12 +23,6 @@ REXCVAR_DEFINE_STRING(renut_resolution, "720p", "Nuts&Bolts/Graphics",
                       "Internal render resolution, by its height: 480p, 720p (the game's own), "
                       "1080p, 1440p or 4K (2160 lines). Applies from the next frame.")
     .allowed({"480p", "720p", "1080p", "1440p", "4K"});
-
-REXCVAR_DEFINE_STRING(renut_msaa, RENUT_DEFAULT_MSAA, "Nuts&Bolts/Graphics",
-                      "Multisampling of the game's targets: Game keeps the console's 2x/4x, Off "
-                      "renders them with one sample (much cheaper on weak GPUs, rougher edges). "
-                      "Applies to targets made after the change.")
-    .allowed({"Game", "Off"});
 
 namespace renut::gpu {
 
@@ -67,15 +60,17 @@ struct CachedFramebuffer {
 // holograms test against it), and each hologram renders through surfaces of
 // its own at the same EDRAM bases. So host targets belong to the EDRAM view,
 // shared by every surface object over it, as long as they also agree on the
-// host format and render scale: graphics_options renders some surfaces at
-// another scale (the post-processing buffers at 1x), and a view used by
-// surfaces of both kinds would otherwise be rebuilt at every switch.
+// host format, render scale and host sample count: graphics_options renders
+// some surfaces at another scale (the post-processing buffers at 1x), and a
+// view used by surfaces of both kinds would otherwise be rebuilt at every
+// switch; a new renut_msaa gives new targets from the next frame.
 uint64_t TargetKey(const d3d::SurfaceDesc &desc, bool depth, plume::RenderFormat format,
-                   RenderScale scale) {
+                   RenderScale scale, plume::RenderSampleCounts samples) {
   const u32 info = desc.SurfaceInfo;
   return uint64_t(u32(desc.ColorInfo) & 0xFFF) | uint64_t(info & 0x3FFF) << 12 |
          uint64_t((info >> 16) & 3) << 26 | uint64_t(depth) << 28 |
-         uint64_t(scale.code & 7) << 29 | uint64_t(u32(format)) << 32;
+         uint64_t(scale.code & 7) << 29 | uint64_t(u32(format) & 0xFFFFFF) << 32 |
+         uint64_t(samples & 0x1F) << 56;
 }
 
 std::unordered_map<uint64_t, std::unique_ptr<HostSurface>> g_targets;
@@ -87,6 +82,20 @@ uint64_t g_next_generation = 1;
 // SetTilingExtentLocked; 0 x 0 when not tiling.
 uint32_t g_tiling_width = 0;
 uint32_t g_tiling_height = 0;
+
+// GetHostSurfaceLocked's targets by surface, its header and the tiling, within
+// a generation: every draw looks up each of its targets, two maps each. A
+// generation ends with the frame (the options latch) and whenever a target is
+// made or retired or a surface's target changes.
+uint64_t g_surface_generation = 1;
+struct SurfaceMemo {
+  uint64_t generation = 0;
+  u32 va = 0;
+  u32 tiling[2] = {};
+  u32 desc[6] = {};
+  HostSurface *surface = nullptr;
+};
+SurfaceMemo g_surface_memo[256];
 
 // Drops cached framebuffers that reference 'surface'.
 void ForgetFramebuffers(const HostSurface *surface) {
@@ -108,25 +117,13 @@ void ForgetFramebuffers(const HostSurface *surface) {
 // Retires the target and everything made over it (deferred past in-flight
 // frames).
 void RetireTarget(HostSurface &surface) {
+  ++g_surface_generation;
   ForgetFramebuffers(&surface);
   if (surface.sample_slot != UINT32_MAX)
     Video::FreeTextureSlotLocked(surface.sample_slot);
   surface.sample_slot = UINT32_MAX;
   Video::RetireLocked(std::move(surface.sample_view));
   Video::RetireLocked(std::move(surface.texture));
-}
-
-plume::RenderSampleCounts SampleCount(u32 info_word) {
-  if (REXCVAR_GET(renut_msaa) == "Off")
-    return plume::RenderSampleCount::COUNT_1;
-  switch ((info_word >> 16) & 3) {
-  case 1:
-    return plume::RenderSampleCount::COUNT_2;
-  case 2:
-    return plume::RenderSampleCount::COUNT_4;
-  default:
-    return plume::RenderSampleCount::COUNT_1;
-  }
 }
 
 // At least 'min_width' x 'min_height' (see SetTilingExtentLocked), at 'scale'.
@@ -142,12 +139,12 @@ bool BuildTarget(HostSurface &surface, const d3d::SurfaceDesc &desc, uint32_t mi
   const uint32_t host_width = surface.scale.Size(surface.width);
   const uint32_t host_height = surface.scale.Size(surface.height);
   surface.depth = d3d::IsDepthFormat(surface.format_word);
-  surface.samples = SampleCount(surface.info_word);
   if (surface.depth) {
     surface.format = DepthTargetFormat();
   } else {
     surface.format = SurfaceColorFormat(desc);
   }
+  surface.samples = SurfaceSampleCount(desc, surface.format);
 
   plume::RenderDevice *device = Video::Device();
   const plume::RenderMultisampling multisampling(surface.samples);
@@ -183,6 +180,7 @@ RenderScale ResolutionScale() {
 }
 
 void LatchResolutionScaleLocked() {
+  ++g_surface_generation;
   LatchGraphicsOptionsLocked();
   const std::string resolution = REXCVAR_GET(renut_resolution);
   // Codes of RenderScale.
@@ -207,6 +205,7 @@ void SetTilingExtentLocked(uint32_t width, uint32_t height) {
 // A surface stops using its target (destroyed, or its header now describes
 // another view); the last user retires it.
 void UnuseTarget(uint64_t key) {
+  ++g_surface_generation;
   auto users = g_target_users.find(key);
   if (users == g_target_users.end() || --users->second)
     return;
@@ -258,12 +257,26 @@ HostSurface *GetHostSurfaceLocked(u32 surface_va) {
   const auto *desc = GuestPtr<const d3d::SurfaceDesc>(surface_va + sizeof(d3d::Resource));
   if (!desc)
     return nullptr;
+  u32 desc_words[6];
+  static_assert(sizeof(desc_words) == sizeof(d3d::SurfaceDesc));
+  std::memcpy(desc_words, desc, sizeof(desc_words));
+  SurfaceMemo &memo = g_surface_memo[(surface_va * 0x9E3779B1u) >> 24];
+  if (memo.generation == g_surface_generation && memo.va == surface_va &&
+      memo.tiling[0] == g_tiling_width && memo.tiling[1] == g_tiling_height &&
+      std::memcmp(memo.desc, desc_words, sizeof(desc_words)) == 0) {
+    // As below, for a target that covers the surface already.
+    memo.surface->size_word = desc->Size;
+    memo.surface->info_word = desc->SurfaceInfo;
+    memo.surface->format_word = desc->Format;
+    return memo.surface;
+  }
 
   const bool depth = d3d::IsDepthFormat(desc->Format);
   const plume::RenderFormat format = depth ? DepthTargetFormat() : SurfaceColorFormat(*desc);
   // The render resolution, or the finer one graphics_options gives it.
   const RenderScale scale = SurfaceRenderScale(*desc, g_resolution_scale);
-  const uint64_t key = TargetKey(*desc, depth, format, scale);
+  // ... and the sample count renut_msaa gives it.
+  const uint64_t key = TargetKey(*desc, depth, format, scale, SurfaceSampleCount(*desc, format));
   auto [bound, first_use] = g_surface_keys.try_emplace(surface_va, key);
   if (first_use) {
     ++g_target_users[key];
@@ -286,13 +299,26 @@ HostSurface *GetHostSurfaceLocked(u32 surface_va) {
     slot->size_word = desc->Size;
     slot->info_word = desc->SurfaceInfo;
     slot->format_word = desc->Format;
-    if (slot->width >= min_width && slot->height >= min_height && slot->scale == scale)
+    if (slot->width >= min_width && slot->height >= min_height && slot->scale == scale) {
+      memo.generation = g_surface_generation;
+      memo.va = surface_va;
+      memo.tiling[0] = g_tiling_width;
+      memo.tiling[1] = g_tiling_height;
+      std::memcpy(memo.desc, desc_words, sizeof(desc_words));
+      memo.surface = slot.get();
       return slot.get();
+    }
     // A larger surface over the view, or a larger tiling: grow it, keeping
     // the size the others gave it (what it held is lost). (Another scale is
     // another target: TargetKey.)
     min_width = std::max(min_width, slot->width);
     min_height = std::max(min_height, slot->height);
+    static uint32_t logged = 0;
+    if (logged++ < 32) {
+      RGPU_WARN("Surface {:08X}: target rebuilt {}x{} -> {}x{}{}: what it held is lost", surface_va,
+                slot->width, slot->height, min_width, min_height,
+                slot->scale != scale ? " (scale changed)" : "");
+    }
     RetireTarget(*slot);
   } else if (!slot) {
     slot = std::make_unique<HostSurface>();
@@ -394,7 +420,7 @@ void ReleaseHostSurfaceLocked(u32 surface_va) {
     return;
   const uint64_t key = it->second;
   g_surface_keys.erase(it);
-  UnuseTarget(key);
+  UnuseTarget(key);  // (a new generation)
 }
 
 uint32_t SurfaceSampleSlotLocked(HostSurface *surface) {
