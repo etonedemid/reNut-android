@@ -6,7 +6,7 @@ here=$(cd "$(dirname "$0")" && pwd)
 renut=$(dirname "$here")
 : "${ANDROID_SDK:=$HOME/Android/Sdk}"
 : "${ANDROID_NDK:=$ANDROID_SDK/ndk/29.0.14206865}"
-# the stock rexglue-sdk (README.md)
+# the rexglue-sdk source tree, as is (its development branch)
 : "${REXSDK_DIR:=$(dirname "$renut")/rexglue-sdk}"
 # codegen runs on the host: the x86 build's rexglue CLI (build it first)
 : "${HOST_REXGLUE:=$REXSDK_DIR/out/linux-amd64/rexglue}"

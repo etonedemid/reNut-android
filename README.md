@@ -1,54 +1,135 @@
-# reNut for Android
+<img width="1920" height="1080" alt="renut logo" src="https://github.com/user-attachments/assets/273bee28-755f-4494-920f-9333af72091e" />
 
-An Android port of [reNut](https://github.com/masterspike52/reNut), the Banjo-Kazooie: Nuts & Bolts recompilation built with the [ReXGlue SDK](https://github.com/rexglue/rexglue-sdk). It runs natively on arm64 with Vulkan. It also contains a Nintendo Switch homebrew port.
 
-Tested on a Galaxy S25+ (Snapdragon 8 Elite, Adreno 830, Android 16).
 
-<p>
-<img src="docs/android/manager.jpg" width="49%"> <img src="docs/android/title.jpg" width="49%">
-<img src="docs/android/menu.jpg" width="49%"> <img src="docs/android/drivers.jpg" width="49%">
-</p>
+Created using the <a href="https://github.com/rexglue/rexglue-sdk">Rexglue-SDK</a>
 
-## Features
 
-- Manager screen before the game, in NutStaller's style:
-  - Set Up Game: pick the game folder, or extract a disc image (built-in extract-xiso).
-  - Drivers: pick a custom Vulkan driver (Turnip and others, through libadrenotools).
-  - Settings: reNut's options, with defaults sized for phones.
-  - Workshop: vehicles and part mods from the [NutStaller workshop](https://github.com/etonedemid/nutstaller-workshop). Installing a vehicle installs the part mods it needs first.
-  - Saves: back up the save to `/sdcard/reNut/backups`, name, restore or delete backups, or import a save folder put in `/sdcard/reNut`. Restoring or importing backs up the current save first. Backups are plain zips, the same as NutStaller's on a PC.
-  - Gamepad: D-pad or stick to move, A to press, B to go back, LB/RB to change page, Start to play.
-- On-screen controls (virtual Xbox pad) with an editable layout. They hide while a gamepad is connected.
-- Back gesture opens a side menu: resume, settings, touch layout, exit to the manager. The game pauses while it is open.
-- Backgrounding the app pauses the game.
-- Keyboard and mouse controls and custom part mods from upstream reNut (see its [custom-parts.md](https://github.com/masterspike52/reNut/blob/main/docs/modding/custom-parts.md)).
-- Compiled shaders are kept on disk (one cache per driver). A small overlay shows while shaders compile.
+Discord
+----------------------------------------------
+https://discord.gg/D5Bz2ZsHdY - you can join the discord here
 
-## Install and play
 
-1. Install `reNut.apk` from the [releases](../../releases/latest) page. Allow "all files access" when asked.
-2. You need your own copy of Banjo-Kazooie: Nuts & Bolts (USA). Copy the disc image (`.iso`) to `/sdcard/reNut/` or `/sdcard/Download/`, then use Extract on the Set Up Game page. You can also copy an already extracted game to `/sdcard/reNut/game`.
-3. Press Play.
+About
+--------------------------------------------
+* Renut is a Recompilation of Banjo-Kazooie: Nuts and Bolts using the Rexglue-SDK
 
-Custom drivers: put AdrenoTools driver zips in `/sdcard/reNut/drivers`, then install them from the Drivers page. If a driver crashes the game, the next start falls back to the system driver.
+* the code has heavy ai useage, your opinion on ai useage means very little to me, if you have a problem with it you're free to fork the repo and redo it your own way (this is the purpose of open source projects)
 
-Config, logs and caches live in `/sdcard/Android/data/com.rexglue.renut/files`.
+* Renut does have a native renderer in which the games D3D functions are natively hooked to run through plume as well as compiles its recompiled shaders from xenosrecomp into its executables which makes the latest release different from previous releases which used the xenos emulation pipeline that rexglue provides for debugging
 
-## Building
 
-You need the Android SDK and NDK 29, and a host (x86-64 Linux) build of the rexglue CLI for codegen. The Android build uses the stock ReXGlue SDK (its development branch, as reNut does; tested at bd833a2), unmodified (what it lacks on Android is in `android/sdk_compat` and `src/renut_engine/app/android_*.cpp`). Clone it next to this repo:
 
-```
-git clone --recursive -b development https://github.com/rexglue/rexglue-sdk
-git clone --recursive https://github.com/etonedemid/reNut-android reNut
-cd reNut
-# put your default.xex and the game files in assets/ (codegen and shader dump read them)
-android/configure.sh
-android/build.sh install
-```
+What's currently supported?
+-----------------------------------------
+currently the only devices supported are linux devices and windows devices, i have not gotten around to adding metal support for mac nor do i know if itll be worth it (if you use a mac like i said above, its open source, you're free to fork it)
 
-The Switch build still needs the SDK fork (`-b renut-android https://github.com/etonedemid/rexglue-sdk`) and has two local patches that are not pushed: an FFmpeg `config.h` entry and volk's static NVK entry point.
 
-## Credits
 
-reNut by masterspike52 and contributors. ReXGlue SDK by the ReXGlue team. libadrenotools by bylaws. The NutStaller art and the Andy font come from NutStaller. Android and Switch ports by etonedemid. Discord: https://discord.gg/D5Bz2ZsHdY
+
+Android
+--------------------------------------
+* arm64, Android 11 or newer, Vulkan. Get the apk from <a href="https://github.com/etonedemid/reNut-android/releases">reNut-android releases</a>
+
+* copy your iso to /sdcard/reNut or /sdcard/Download, use Extract on the Set Up Game page, then Play. Saves, the workshop and custom Adreno drivers (zips in /sdcard/reNut/drivers) are in the same menu
+
+* to build it: android/configure.sh, then android/build.sh (Android SDK, NDK 29 and a host build of the rexglue CLI for codegen). The rexglue SDK is used as is
+
+
+
+ How to play
+ ---------------------------------------------------
+ * acquire your banjo-kazooie: nuts and bolts (usa) iso (you do not need the update for its not supported)
+
+* download <a href="https://github.com/etonedemid/NutStaller/releases">nutstaller</a>
+
+* open nutstaller, and click do everything and select your iso from the first step
+
+* click play
+
+Online play
+--------------------------------------
+* online play uses Epic Online Services (for windows this includes a dll for linux i havent tested but should be part of the appimage)
+
+* if you wish to play online you must press F5 and check the signed into live box (this spoofs your xbox live to be Gold so you can get into the xbox live option) as well as set your name itll look like this
+  <img width="562" height="129" alt="image" src="https://github.com/user-attachments/assets/76be801c-a6e2-4ff9-9629-860ee72b5f01" />
+
+* pressing F6 opens the friends list and displays your online id (also known as a machine id)
+
+* to add friends you press F6 and send them your friend id or they can send you theirs in which you can copy paste it into the online id box and click send friend request
+<br>
+  <img width="640" height="147" alt="image" src="https://github.com/user-attachments/assets/c19c2008-c676-4e24-a7ae-90945446aafd" />
+
+
+* the friend will see an invite in the F6 imgui that they can accept their new friend
+
+* go into the game and select multiplayer > Xbox Live
+
+* hit RB then select your friend to join them
+
+
+things i havent tested for online
+-------------------------------------
+* matchmaking, reasoning is it may require a server, if it does i will not be implementing this
+
+Things that dont work
+----------------------------------
+leaderboards, this is because it does require a server unless i wanna set up 100+ things in the EOS dev portal for every mission and other things that use the leaderboard (thanks rare)
+
+Mods
+--------------------------------------------
+* mods made with https://github.com/weighta/NB-Studio-Banjo-Kazooie-Nuts-and-Bolts-World-Editor- made by XephyrCraft, they make .nbpatch files.
+
+* to use the nbpatch files all you have to do is make a mods folder and place them in (its that simple)
+
+* depending on the size of the mod the game could take a while to open (this only happens once) and not all mods work (this will be trial and error)
+
+* we can now add custom parts following <a href="https://github.com/masterspike52/reNut/blob/main/docs/modding/custom-parts.md">custom-parts.md</a>
+
+
+
+What's different
+---------------------------------------------------
+* aside from whats above, i had to scrap some things that weren't necessary, this includes the graphics options that were really in there for coping with the xenos emulation pipeline as well as mouse and keyboard support *(you can still use rexglues mnk which should work better than before)
+
+* in return we now have a slew of new graphical options that work natively with the game like 4K resolution, widescreen, increased shadows, anisotropic filtering, and more. 
+
+
+
+Warning
+------------------------------------------------
+if you have any issues please make an issue after ensuring you have covered things such as 
+
+* updating your graphics drivers
+* making sure the game is using your dedicated GPU and not your APU
+* Making sure it happens more than once (by closing and reopening the game)
+
+* if you have ensured the above the best way to go about it is to use <a href="https://renderdoc.org/">Renderdoc</a> and collect me render captures that i can then use to solve the issue
+
+* if a crash happens please provide the crash dump and the log file associated with it 
+
+Credits
+------------------------------------------------
+<a href="https://github.com/rexglue/rexglue-sdk">Rexglue team</a> for creating Rexglue-SDK
+<br>
+the <a href="https://discord.gg/ksm4vVbBf">Rexglue SDK discord</a> for helping with any info they have
+<br>
+SolarCookies for a handful of midasm hooks 
+<br>
+ValcomDrifty for the renut logo
+<br>
+OlieGamerTV for the information and documentations made for nuts and bolts specifically as well as a multitude of other things as well as assisting with other things about nuts and bolts
+<br>
+XephyrCraft for helping test mods made with his tool as well as testing the game
+<br>
+Leia and eli for testing renut (as well as anyone else who tested renut on windows)
+<br>
+.
+<br>
+.
+<br>
+.
+<br>
+.
+<br>
+you, the player?
