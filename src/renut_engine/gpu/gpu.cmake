@@ -321,6 +321,10 @@ function(renut_gpu_setup TARGET)
         # plume's surface is the ANativeWindow; volk loads libvulkan (or the
         # driver adrenotools picked) itself.
         target_link_libraries(${TARGET} PRIVATE android log)
+        # plume's volk loads libvulkan itself: its dlopen is reNut's, where the
+        # picked driver stands in (android_driver.cpp). Only plume's: other code
+        # (adrenotools) reads dlopen's own machine code.
+        target_compile_definitions(plume PRIVATE dlopen=renut_plume_dlopen)
     endif()
     # Linux: volk loads libvulkan itself, and the Wayland or X11 surface is made
     # from SDL's handles (backend/native_window.cpp): no X11 or Wayland library.

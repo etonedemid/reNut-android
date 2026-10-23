@@ -121,9 +121,6 @@ if(ANDROID)
     # APK next to librenut.so (android/build.sh).
     add_subdirectory(thirdparty/libadrenotools EXCLUDE_FROM_ALL)
     target_link_libraries(renut PRIVATE adrenotools)
-    # plume's volk loads libvulkan itself: the picked driver stands in for it
-    # (android_driver.cpp).
-    target_link_options(renut PRIVATE "-Wl,--wrap=dlopen")
     add_dependencies(renut main_hook file_redirect_hook gsl_alloc_hook)
     target_sources(renut PRIVATE src/renut_engine/app/android_main.cpp src/renut_engine/app/android_driver.cpp src/renut_engine/app/android_content.cpp src/renut_engine/app/xiso.cpp
         src/renut_engine/ui/touch_controls.cpp)

@@ -22,15 +22,14 @@
 namespace fs = std::filesystem;
 
 // The custom driver, once loaded. plume's Vulkan interface runs volkInitialize,
-// which would load the system libvulkan over it: librenut.so is linked with
-// --wrap=dlopen (CMakeLists.txt), so volk's dlopen of libvulkan gets the driver.
+// which would load the system libvulkan over it: plume is built with its dlopen
+// renamed to this one (gpu.cmake), so volk's dlopen of libvulkan gets the driver.
 static void *g_driver_handle;
 
-extern "C" void *__real_dlopen(const char *name, int flags);
-extern "C" void *__wrap_dlopen(const char *name, int flags) {
+extern "C" void *renut_plume_dlopen(const char *name, int flags) {
     if (g_driver_handle && name && (!std::strcmp(name, "libvulkan.so.1") || !std::strcmp(name, "libvulkan.so")))
         return g_driver_handle;
-    return __real_dlopen(name, flags);
+    return dlopen(name, flags);
 }
 
 namespace renut::android {
