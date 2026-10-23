@@ -32,8 +32,8 @@ import org.libsdl.app.SDLActivity;
 public class RenutActivity extends SDLActivity {
     @Override
     protected String[] getLibraries() {
-        // SDL is linked into librenut.so.
-        return new String[] { "c++_shared", "renut" };
+        // SDL is linked into librenut.so; librexruntime.so is the SDK's runtime.
+        return new String[] { "c++_shared", "rexruntime", "renut" };
     }
 
     @Override

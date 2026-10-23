@@ -39,17 +39,16 @@ namespace PathConfigStore {
     }
 
     // Next to the executable (the user data folder for an AppImage, whose
-    // own folder is read-only; see app_paths.h).
+    // own folder is read-only, and on Android; see app_paths.h).
     inline std::filesystem::path GetStorePath(const std::string& app_name) {
-        if (renut::paths::IsAppImage())
+        if (renut::paths::InUserFolder())
             return renut::paths::WritableFolder() / (app_name + ".cfg");
 #if defined(_WIN32)
         wchar_t exe_path[MAX_PATH] = {};
         GetModuleFileNameW(nullptr, exe_path, MAX_PATH);
         std::filesystem::path dir = std::filesystem::path(exe_path).parent_path();
-#elif defined(__SWITCH__) || defined(__ANDROID__)
-        // Switch: hbloader's argv[0], sdmc:/switch/renut/renut.nro; Android:
-        // the app's files directory
+#elif defined(__SWITCH__)
+        // hbloader's argv[0], sdmc:/switch/renut/renut.nro
         std::filesystem::path dir = rex::filesystem::GetExecutableFolder();
 #else
         std::error_code ec;

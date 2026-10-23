@@ -32,6 +32,7 @@
 
 #include "imgui.h"
 #include "imgui_internal.h"
+#include "renut_engine/app/config_file.h"
 #include "renut_engine/app/android_content.h"
 #include "renut_engine/app/android_driver.h"
 #include "renut_engine/app/path_config_store.h"
@@ -602,7 +603,7 @@ private:
 
     void SaveSettings() {
         if (!defaults_.config_path.empty()) {
-            rex::cvar::SaveConfig(defaults_.config_path);
+            renut::config::Save(defaults_.config_path);
             settings_message_ = "SAVED";
         }
     }

@@ -1,4 +1,5 @@
 #include "renut_engine/ui/touch_controls.h"
+#include "renut_engine/app/app_paths.h"
 
 #include <algorithm>
 #include <atomic>
@@ -109,7 +110,7 @@ void Layout() {
     }
 }
 
-std::filesystem::path LayoutPath() { return rex::filesystem::GetExecutableFolder() / "controls.txt"; }
+std::filesystem::path LayoutPath() { return renut::paths::WritableFolder() / "controls.txt"; }
 
 void LoadLayout() {
     FILE *f = std::fopen(LayoutPath().string().c_str(), "r");

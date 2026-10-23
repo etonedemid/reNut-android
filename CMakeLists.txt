@@ -9,7 +9,25 @@ project(renut LANGUAGES CXX)
 set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
+if(ANDROID)
+    # The stock rexglue SDK builds for Android with what it expects from the
+    # platform that bionic and the NDK do not have: headers in android/sdk_compat
+    # (one force-included), defined in src/renut_engine/app/android_sdk_compat.cpp.
+    # Its UI asks pkg-config for X11 and Wayland on every Linux build: none here.
+    # It links pthread and rt, which bionic keeps in libc: empty archives.
+    set(RENUT_SDK_COMPAT "${CMAKE_CURRENT_SOURCE_DIR}/android/sdk_compat")
+    include_directories(BEFORE "${RENUT_SDK_COMPAT}")
+    link_directories(BEFORE "${RENUT_SDK_COMPAT}/lib")
+    add_compile_options("$<$<COMPILE_LANGUAGE:CXX>:-include${RENUT_SDK_COMPAT}/renut_sdk_compat.h>")
+    set(ENV{PKG_CONFIG_LIBDIR} "${RENUT_SDK_COMPAT}/pkgconfig")
+endif()
+
 include(generated/rexglue.cmake)
+
+if(ANDROID)
+    # librexruntime.so needs them as much as librenut.so.
+    target_sources(rexcore PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src/renut_engine/app/android_sdk_compat.cpp")
+endif()
 
 
 
@@ -67,6 +85,13 @@ endif()
 
 rexglue_setup_target(renut)
 
+if(ANDROID)
+    # reNut's SDL_main replaces the SDK's entry point (android_main.cpp).
+    get_target_property(renut_sources renut SOURCES)
+    list(FILTER renut_sources EXCLUDE REGEX "windowed_app_main_sdl\\.cpp$")
+    set_target_properties(renut PROPERTIES SOURCES "${renut_sources}")
+endif()
+
 # Lua 5.4 (thirdparty/lua-5.4.7, lua.org, MIT) for mods' part scripts
 # (src/renut_engine/game/part_scripts.cpp). Built as C++: script errors unwind
 # with exceptions rather than longjmp across reNut's C++ frames.
@@ -101,7 +126,7 @@ if(ANDROID)
     add_subdirectory(thirdparty/libadrenotools EXCLUDE_FROM_ALL)
     target_link_libraries(renut PRIVATE adrenotools)
     add_dependencies(renut main_hook file_redirect_hook gsl_alloc_hook)
-    target_sources(renut PRIVATE src/renut_engine/app/android_driver.cpp src/renut_engine/app/android_content.cpp src/renut_engine/app/xiso.cpp
+    target_sources(renut PRIVATE src/renut_engine/app/android_main.cpp src/renut_engine/app/android_driver.cpp src/renut_engine/app/android_content.cpp src/renut_engine/app/xiso.cpp
         src/renut_engine/ui/touch_controls.cpp)
 endif()
 

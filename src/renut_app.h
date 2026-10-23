@@ -35,16 +35,16 @@ public:
     }
 
     // renut.toml and the logs go where reNut can write: next to the
-    // executable, or the user data folder when running as an AppImage.
+    // executable, or the user data folder for an AppImage and on Android.
     void OnConfigurePaths(rex::PathConfig& paths) override {
-        if (renut::paths::IsAppImage())
+        if (renut::paths::InUserFolder())
             paths.config_path = renut::paths::WritableFolder() / (app_name_ + ".toml");
         config_path_ = paths.config_path;
         renut::graphics_menu::SetConfigPath(config_path_);
     }
 
     void OnConfigureLogging(rex::LogConfig& config) override {
-        if (renut::paths::IsAppImage())
+        if (renut::paths::InUserFolder())
             config.log_dir = renut::paths::WritableFolder() / "logs";
     }
 

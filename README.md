@@ -36,10 +36,10 @@ Config, logs and caches live in `/sdcard/Android/data/com.rexglue.renut/files`.
 
 ## Building
 
-You need the Android SDK and NDK 29, and a host (x86-64 Linux) build of the rexglue CLI for codegen. Clone the SDK fork next to this repo:
+You need the Android SDK and NDK 29, and a host (x86-64 Linux) build of the rexglue CLI for codegen. The Android build uses the stock ReXGlue SDK (its development branch, as reNut does; tested at bd833a2), unmodified (what it lacks on Android is in `android/sdk_compat` and `src/renut_engine/app/android_*.cpp`). Clone it next to this repo:
 
 ```
-git clone --recursive -b renut-android https://github.com/etonedemid/rexglue-sdk
+git clone --recursive -b development https://github.com/rexglue/rexglue-sdk
 git clone --recursive https://github.com/etonedemid/reNut-android reNut
 cd reNut
 # put your default.xex and the game files in assets/ (codegen and shader dump read them)
@@ -47,7 +47,7 @@ android/configure.sh
 android/build.sh install
 ```
 
-The Switch build has two local patches that are not pushed: an FFmpeg `config.h` entry and volk's static NVK entry point.
+The Switch build still needs the SDK fork (`-b renut-android https://github.com/etonedemid/rexglue-sdk`) and has two local patches that are not pushed: an FFmpeg `config.h` entry and volk's static NVK entry point.
 
 ## Credits
 
