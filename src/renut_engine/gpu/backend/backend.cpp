@@ -182,9 +182,9 @@ bool ReadsBlendConstant(const VkGraphicsPipelineCreateInfo &info) {
   return false;
 }
 
-#if defined(__SWITCH__) || defined(__ANDROID__)
-// Mesa on Switch has no disk shader cache and Android's Vulkan drivers keep
-// none for apps, so every start compiled every pipeline again: a pipeline
+#if defined(__ANDROID__)
+// Android's Vulkan drivers keep no disk shader cache for apps, so every start
+// compiled every pipeline again: a pipeline
 // cache kept in pipeline_cache.bin (next to the pipeline list) holds the
 // compiled shaders. Saved from whichever thread created pipelines, at most
 // every 10 s (and when Android sends the app to the background); the game is
@@ -247,7 +247,7 @@ void SavePipelineCache(VkDevice device, uint32_t created, bool now_please = fals
   }
   std::error_code ec;
   std::filesystem::rename(tmp, g_cache_file, ec);
-  if (ec) {  // Horizon's FS does not rename over an existing file
+  if (ec) {  // filesystems that do not rename over an existing file
     std::filesystem::remove(g_cache_file, ec);
     std::filesystem::rename(tmp, g_cache_file, ec);
   }
@@ -267,7 +267,7 @@ VKAPI_ATTR VkResult VKAPI_CALL CreateGraphicsPipelines(VkDevice device, VkPipeli
                                                        const VkGraphicsPipelineCreateInfo *infos,
                                                        const VkAllocationCallbacks *allocator,
                                                        VkPipeline *pipelines) {
-#if defined(__SWITCH__) || defined(__ANDROID__)
+#if defined(__ANDROID__)
   if (cache == VK_NULL_HANDLE) {
     const VkResult result =
         CreateGraphicsPipelinesImpl(device, SharedPipelineCache(device), count, infos, allocator,
@@ -358,7 +358,7 @@ void RouteVulkanPipelineCreation() {
 } // namespace
 
 void FlushPipelineCache() {
-#if defined(__SWITCH__) || defined(__ANDROID__)
+#if defined(__ANDROID__)
   if (g_cache_device != VK_NULL_HANDLE)
     SavePipelineCache(g_cache_device, 0, true);
 #endif

@@ -1,7 +1,6 @@
 [submodule "thirdparty/plume"]
 	path = thirdparty/plume
-	url = https://github.com/etonedemid/plume.git
-	branch = renut-android
+	url = https://github.com/renderbag/plume.git
 [submodule "thirdparty/libadrenotools"]
 	path = thirdparty/libadrenotools
 	url = https://github.com/bylaws/libadrenotools.git

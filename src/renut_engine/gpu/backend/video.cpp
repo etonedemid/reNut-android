@@ -63,9 +63,8 @@ VideoState &State() {
 
 namespace {
 
-#if defined(__SWITCH__) || defined(__ANDROID__)
-// The NVK Switch WSI (VK_NN_vi_surface) only offers R8G8B8A8, and it is the
-// format every Android surface has.
+#if defined(__ANDROID__)
+// The format every Android surface has.
 constexpr plume::RenderFormat kSwapChainFormat = plume::RenderFormat::R8G8B8A8_UNORM;
 #else
 constexpr plume::RenderFormat kSwapChainFormat = plume::RenderFormat::B8G8R8A8_UNORM;

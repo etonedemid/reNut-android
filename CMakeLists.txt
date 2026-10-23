@@ -27,6 +27,14 @@ include(generated/rexglue.cmake)
 if(ANDROID)
     # librexruntime.so needs them as much as librenut.so.
     target_sources(rexcore PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src/renut_engine/app/android_sdk_compat.cpp")
+    # Codegen runs the SDK's rexglue, which this build would make for Android:
+    # its link writes a script running the host's instead
+    # (REXGLUE_CODEGEN_EXECUTABLE, android/configure.sh).
+    if(NOT REXGLUE_CODEGEN_EXECUTABLE)
+        message(FATAL_ERROR "Set REXGLUE_CODEGEN_EXECUTABLE to a host build of rexglue")
+    endif()
+    set_property(TARGET rexglue PROPERTY RULE_LAUNCH_LINK
+                 "${CMAKE_CURRENT_SOURCE_DIR}/android/host_rexglue.sh ${REXGLUE_CODEGEN_EXECUTABLE}")
 endif()
 
 
@@ -106,25 +114,16 @@ if(MSVC)
 else()
     target_compile_options(renut_lua PRIVATE -w -x c++)
 endif()
-if(NINTENDO_SWITCH)
-    # devkitA64's limits.h has no LLONG_MAX, which luaconf.h takes for C99:
-    # build Lua as on Windows (C89: long and double, and long is 64-bit on
-    # aarch64). PUBLIC: the scripts' side must see the same types.
-    target_compile_definitions(renut_lua PUBLIC LUA_USE_C89)
-endif()
 target_link_libraries(renut PRIVATE renut_lua)
-
-if(NINTENDO_SWITCH)
-    # Homebrew: renut.elf -> renut.nro for hbloader (run in title takeover).
-    nx_generate_nacp(renut.nacp NAME "reNut" AUTHOR "reNut" VERSION "0.1.0")
-    nx_create_nro(renut NACP renut.nacp ICON "${CMAKE_SOURCE_DIR}/icon/renut_switch.jpg")
-endif()
 
 if(ANDROID)
     # Custom Vulkan drivers (Turnip) for Adreno; its hook libraries go into the
     # APK next to librenut.so (android/build.sh).
     add_subdirectory(thirdparty/libadrenotools EXCLUDE_FROM_ALL)
     target_link_libraries(renut PRIVATE adrenotools)
+    # plume's volk loads libvulkan itself: the picked driver stands in for it
+    # (android_driver.cpp).
+    target_link_options(renut PRIVATE "-Wl,--wrap=dlopen")
     add_dependencies(renut main_hook file_redirect_hook gsl_alloc_hook)
     target_sources(renut PRIVATE src/renut_engine/app/android_main.cpp src/renut_engine/app/android_driver.cpp src/renut_engine/app/android_content.cpp src/renut_engine/app/xiso.cpp
         src/renut_engine/ui/touch_controls.cpp)

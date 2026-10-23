@@ -30,7 +30,7 @@ plume::RenderShaderFormat HostShaderFormat();
 // asks it for the surface's instance extensions.
 std::unique_ptr<plume::RenderInterface> CreateRenderInterface(plume::RenderWindow window);
 
-// Writes the persistent pipeline cache now (Switch, Android), e.g. before the
+// Writes the persistent pipeline cache now (Android), e.g. before the
 // app is sent to the background and maybe killed.
 void FlushPipelineCache();
 

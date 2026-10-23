@@ -49,7 +49,7 @@ REXCVAR_DEFINE_STRING(renut_bloom, "Game", "Nuts&Bolts/Graphics",
                       "or Off.")
     .allowed({"Game", "Reduced", "Off"});
 
-REXCVAR_DEFINE_STRING(renut_msaa, RENUT_DEFAULT_MSAA, "Nuts&Bolts/Graphics",
+REXCVAR_DEFINE_STRING(renut_msaa, "Game", "Nuts&Bolts/Graphics",
                       "Multisample anti-aliasing of the scene: the game's own, Off, or 2x, 4x or "
                       "8x. More samples smooth edges more but cost GPU time and memory, most at "
                       "high resolutions. Applies from the next frame.")

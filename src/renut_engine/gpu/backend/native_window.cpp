@@ -15,12 +15,6 @@
 #include <plume_vulkan.h>
 #endif
 
-#if defined(__SWITCH__)
-extern "C" {
-#include <switch/display/native_window.h>
-}
-#endif
-
 namespace renut::gpu {
 
 #if defined(_WIN32)
@@ -89,11 +83,7 @@ SDL_Window *FindGameSdlWindow() {
 } // namespace
 
 bool GetNativeRenderWindow(plume::RenderWindow &out) {
-#if defined(__SWITCH__)
-  // Horizon has one screen: the application's default layer.
-  out = nwindowGetDefault();
-  return true;
-#elif defined(__ANDROID__)
+#if defined(__ANDROID__)
   SDL_Window *sdl_window = FindGameSdlWindow();
   out = sdl_window ? static_cast<ANativeWindow *>(SDL_GetPointerProperty(
                          SDL_GetWindowProperties(sdl_window), SDL_PROP_WINDOW_ANDROID_WINDOW_POINTER, nullptr))
@@ -131,7 +121,7 @@ SDL_Window *GetGameSdlWindow() {
 
 } // namespace renut::gpu
 
-#if !defined(_WIN32) && !defined(__SWITCH__) && !defined(__ANDROID__)
+#if !defined(_WIN32) && !defined(__ANDROID__)
 
 // plume's Vulkan surface (its PLUME_SDL_VULKAN_ENABLED path, through
 // gpu/backend/sdl2_vulkan/SDL_vulkan.h), on whichever video driver SDL chose:

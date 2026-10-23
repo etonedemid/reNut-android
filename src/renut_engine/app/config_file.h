@@ -2,7 +2,7 @@
 // Saves renut.toml. Unlike rex::cvar::SaveConfig, the file is written even
 // with nothing modified (a setting put back to its default must leave it, or
 // the next start loads the old value again), and through a temporary file, so
-// a process killed mid-write (Android, the Switch) leaves the old file rather
+// a process killed mid-write (Android) leaves the old file rather
 // than a truncated one.
 
 #include <filesystem>
